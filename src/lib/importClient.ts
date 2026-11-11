@@ -1,14 +1,14 @@
 import { useSyncExternalStore } from 'react'
-import { db, getSetting, rollbackZip } from './db'
+import { db, getSetting, rollbackZip, recoverInterruptedImports } from './db'
 import type { Decision, UnitInfo } from './importCore'
 import type { ImportReport } from './types'
 import { indexZip } from './search'
 
 export interface QueueItem {
   id: number; file: File; name: string
-  status: 'queued' | 'running' | 'waiting' | 'done' | 'warn' | 'failed' | 'cancelled'
+  status: 'queued' | 'running' | 'waiting' | 'done' | 'warn' | 'failed' | 'cancelled' | 'skipped'
   pct: number; msg: string; error?: string; reports?: ImportReport[]; zipId?: number
-  pending?: { units: UnitInfo[] }
+  pending?: { units: UnitInfo[] }; resumeZipId?: number; force?: boolean
 }
 let items: QueueItem[] = []
 let snapshot = items
@@ -23,10 +23,25 @@ const patch = (it: QueueItem, p: Partial<QueueItem>) => { Object.assign(it, p); 
 
 export const useQueue = () => useSyncExternalStore(cb => { subs.add(cb); return () => { subs.delete(cb) } }, () => snapshot)
 
-export function enqueue(files: File[]) {
-  for (const f of files) items.push({ id: nextId++, file: f, name: f.name, status: 'queued', pct: 0, msg: 'Waiting…' })
+/** Classify every picked ZIP: already imported (skip) / interrupted earlier (resume) / new. Nothing is imported twice. */
+export async function enqueue(files: File[]) {
+  if (!running) await recoverInterruptedImports()      // a crashed worker/page leaves 'importing' records: make them resumable first
+  const known = await db.zips.toArray()
+  const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+  for (const f of sorted) {
+    const same = (z: { name: string; size: number }) => z.name === f.name && z.size === f.size
+    const done = known.find(z => same(z) && (z.status === 'done' || z.status === 'done_with_warnings'))
+    const part = known.find(z => same(z) && z.status === 'interrupted')
+    const dupInQueue = items.some(i => i.name === f.name && i.file.size === f.size && ['queued', 'running', 'waiting'].includes(i.status))
+    const base = { id: nextId++, file: f, name: f.name, pct: 0 }
+    if (dupInQueue) items.push({ ...base, status: 'skipped', msg: 'Already in this batch — skipped' })
+    else if (done) items.push({ ...base, status: 'skipped', msg: 'Already imported — skipped (tap “Import again” to force)' })
+    else if (part) items.push({ ...base, status: 'queued', msg: 'Resuming an interrupted import…', resumeZipId: part.id })
+    else items.push({ ...base, status: 'queued', msg: 'New — waiting…' })
+  }
   emit(); pump()
 }
+export function importAgain(id: number) { const it = items.find(i => i.id === id); if (it) { patch(it, { status: 'queued', msg: 'Waiting…', force: true }); pump() } }
 export function clearFinished() { items = items.filter(i => ['queued', 'running', 'waiting'].includes(i.status)); emit() }
 
 async function pump() {
@@ -69,11 +84,11 @@ function runOne(it: QueueItem): Promise<void> {
         try { await indexZip(r.zipId) } catch { /* index is rebuilt lazily */ }
         finish()
       } else if (m.type === 'error') {
-        patch(it, { status: 'failed', error: m.message, msg: 'Failed' }); finish()
+        patch(it, { status: 'failed', error: m.message + ' — safe to retry: pick the same ZIP again and it continues where it stopped.', msg: 'Failed' }); finish()
       }
     }
-    w.onerror = e => { patch(it, { status: 'failed', error: e.message || 'Worker crashed', msg: 'Failed' }); finish() }
-    w.postMessage({ type: 'import', file: it.file, name: it.name, myName, keepOriginal })
+    w.onerror = async e => { await recoverInterruptedImports().catch(() => {}); patch(it, { status: 'failed', error: (e.message || 'Worker crashed') + ' — pick the same ZIP again to continue.', msg: 'Failed' }); finish() }
+    w.postMessage({ type: 'import', file: it.file, name: it.name, myName, keepOriginal, resumeZipId: it.resumeZipId })
   })
 }
 

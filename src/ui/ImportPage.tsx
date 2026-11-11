@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { FolderUp, Check, X, Loader2, Clock, AlertTriangle, ChevronDown, ChevronUp, HelpCircle } from 'lucide-react'
 import { db, getSetting, setSetting } from '../lib/db'
 import type { Decision, UnitInfo } from '../lib/importCore'
-import { answerDecision, cancelAll, cancelCurrent, clearFinished, enqueue, useQueue, type QueueItem } from '../lib/importClient'
+import { answerDecision, cancelAll, cancelCurrent, clearFinished, enqueue, importAgain, useQueue, type QueueItem } from '../lib/importClient'
 import { fmtDate, fmtNum, fmtSize } from '../lib/format'
 import { Btn, Card, Header } from './common'
 import { nav } from './router'
@@ -12,11 +12,24 @@ export function ImportPage() {
   const q = useQueue()
   const [drag, setDrag] = useState(false)
   const input = useRef<HTMLInputElement>(null)
-  const take = (fl: FileList | null) => { if (!fl) return; const files = [...fl]; const zips = files.filter(f => /\.zip$/i.test(f.name) || f.type === 'application/zip' || f.type === 'application/x-zip-compressed'); if (zips.length) { enqueue(zips); navigator.storage?.persist?.() } }
+  const folder = useRef<HTMLInputElement>(null)
+  const dropAll = async (dt: DataTransfer) => {   // dropped folders are walked recursively (desktop browsers)
+    const out: File[] = []
+    const walk = async (en: any): Promise<void> => {
+      if (en.isFile) out.push(await new Promise<File>((res, rej) => en.file(res, rej)))
+      else if (en.isDirectory) { const rd = en.createReader(); for (;;) { const part: any[] = await new Promise((res, rej) => rd.readEntries(res, rej)); if (!part.length) break; for (const c of part) await walk(c) } }
+    }
+    const ents = [...dt.items].map(i => (i as any).webkitGetAsEntry?.()).filter(Boolean)
+    if (ents.length) { for (const e of ents) await walk(e) } else out.push(...dt.files)
+    take(out)
+  }
+  const take = (fl: FileList | File[] | null) => { if (!fl) return; const files = [...fl]; const zips = files.filter(f => /\.zip$/i.test(f.name) || f.type === 'application/zip' || f.type === 'application/x-zip-compressed'); if (zips.length) { enqueue(zips); navigator.storage?.persist?.() } }
   const active = q.some(i => ['queued', 'running', 'waiting'].includes(i.status))
   const done = q.filter(i => ['done', 'warn'].includes(i.status)).length
+  const skipped = q.filter(i => i.status === 'skipped').length
+  const failedN = q.filter(i => i.status === 'failed').length
   return (
-    <div className="h-full flex flex-col bg-bg" onDragOver={e => { e.preventDefault(); setDrag(true) }} onDragLeave={() => setDrag(false)} onDrop={e => { e.preventDefault(); setDrag(false); take(e.dataTransfer.files) }}>
+    <div className="h-full flex flex-col bg-bg" onDragOver={e => { e.preventDefault(); setDrag(true) }} onDragLeave={() => setDrag(false)} onDrop={e => { e.preventDefault(); setDrag(false); dropAll(e.dataTransfer) }}>
       <Header title="Import Chats" onBack backTo="chats" />
       <div className="flex-1 overflow-auto p-4 max-w-3xl w-full mx-auto space-y-4">
         <button onClick={() => input.current?.click()} className={`w-full border-2 border-dashed rounded-3xl py-10 px-4 flex flex-col items-center gap-3 transition ${drag ? 'border-accent bg-accent/10' : 'border-accent/50 bg-bg2'}`}>
@@ -25,9 +38,12 @@ export function ImportPage() {
           <span className="mt-1 bg-accent text-bg font-semibold rounded-xl px-6 py-2.5">Choose Files</span>
         </button>
         <input ref={input} type="file" accept=".zip,application/zip" multiple hidden onChange={e => { take(e.target.files); e.target.value = '' }} />
+        <input ref={folder} type="file" multiple hidden {...({ webkitdirectory: '', directory: '' } as object)} onChange={e => { take(e.target.files); e.target.value = '' }} />
+        <Btn kind="ghost" className="w-full" onClick={() => folder.current?.click()}>Choose a whole folder</Btn>
+        <div className="text-xs text-mute -mt-2 px-1">Memora checks every ZIP: already-imported ones are skipped, interrupted ones continue where they stopped, only new ones are imported. (On iPhone, if the folder option doesn't open a folder, use Choose Files and “Select” all ZIPs in the folder.)</div>
 
         {q.length > 0 && <div className="space-y-2">
-          <div className="flex items-center justify-between"><div className="font-semibold">{active ? `Importing ${done + 1} of ${q.length}` : `${done} of ${q.length} imported`}</div>
+          <div className="flex items-center justify-between"><div className="font-semibold">{active ? `Importing ${done + 1} of ${q.length - skipped}` : `${done} imported${skipped ? ` · ${skipped} already there` : ''}${failedN ? ` · ${failedN} failed (pick again to resume)` : ''}`}</div>
             <div className="flex gap-2">{active ? <button onClick={cancelAll} className="text-sm text-err px-3 py-1.5 rounded-lg bg-err/10">Cancel all</button> : <button onClick={clearFinished} className="text-sm text-mute px-3 py-1.5">Clear list</button>}</div></div>
           {q.map(i => <QItem key={i.id} i={i} />)}
           {!active && done > 0 && <Btn className="w-full" onClick={() => nav('chats')}>View chats</Btn>}
@@ -48,9 +64,10 @@ export function ImportPage() {
 
 function QItem({ i }: { i: QueueItem }) {
   const [open, setOpen] = useState(false)
-  const icon = i.status === 'done' ? <Check size={18} className="text-accent" /> : i.status === 'warn' ? <AlertTriangle size={18} className="text-warn" /> : i.status === 'failed' ? <X size={18} className="text-err" /> : i.status === 'cancelled' ? <X size={18} className="text-mute" /> : i.status === 'queued' ? <Clock size={18} className="text-mute" /> : <Loader2 size={18} className="animate-spin text-accent" />
+  const icon = i.status === 'done' ? <Check size={18} className="text-accent" /> : i.status === 'warn' ? <AlertTriangle size={18} className="text-warn" /> : i.status === 'failed' ? <X size={18} className="text-err" /> : i.status === 'cancelled' ? <X size={18} className="text-mute" /> : i.status === 'skipped' ? <Check size={18} className="text-mute" /> : i.status === 'queued' ? <Clock size={18} className="text-mute" /> : <Loader2 size={18} className="animate-spin text-accent" />
   return <Card className="p-3.5">
     <div className="flex items-center gap-3">{icon}<div className="flex-1 min-w-0"><div className="font-medium truncate">{i.name}</div><div className="text-xs text-mute">{fmtSize(i.file.size)} · {i.status === 'failed' ? <span className="text-err">{i.error}</span> : i.msg}</div></div>
+      {i.status === 'skipped' && <button onClick={() => importAgain(i.id)} className="text-xs text-accent px-2 py-1 bg-accent/10 rounded-lg">Import again</button>}
       {i.status === 'running' && <button onClick={cancelCurrent} className="text-xs text-err px-2 py-1 bg-err/10 rounded-lg">Cancel</button>}
       {i.reports && <button aria-label="Toggle report" onClick={() => setOpen(!open)} className="p-1.5">{open ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>}</div>
     {(i.status === 'running') && <div className="h-1.5 bg-bg rounded-full mt-3 overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: `${i.pct}%` }} /></div>}

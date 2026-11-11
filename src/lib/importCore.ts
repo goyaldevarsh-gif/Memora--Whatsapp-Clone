@@ -1,5 +1,5 @@
 import { openZip, type ZipEntry } from './zipReader'
-import { db, log, recomputeConversation, rollbackZip, previewOf } from './db'
+import { db, log, recomputeConversation, rollbackZip, suspendZip, previewOf } from './db'
 import { parseWhatsAppText, captionOf, extKind, type ParsedMessage, type ParseResult } from './parser'
 import { guessIsGroup, guessMe, matchKey, nameFromFile } from './names'
 import type { Attachment, Conversation, ImportReport, Message, MsgKind, ZipRecord } from './types'
@@ -15,6 +15,7 @@ export interface Hooks {
   progress(p: { phase: string; pct: number; msg: string }): void
   decide(zipName: string, units: UnitInfo[]): Promise<Decision[]>
   isCancelled(): boolean
+  resumeZipId?: number
   myName?: string | null
   keepOriginal?: boolean       // copy the original ZIP into IndexedDB (doubles storage); default true
 }
@@ -55,7 +56,14 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
 
   // 1. Preserve the original ZIP first, untouched.
   const keep = hooks.keepOriginal !== false
-  const zipId = await db.zips.add({ name: zipName, size: file.size, blob: keep ? file : new Blob([]), originalKept: keep, appVersion: VERSION, lastPhase: 'opened ZIP', importedAt: Date.now(), status: 'importing', convIds: [], reports: [] })
+  const prev = hooks.resumeZipId ? await db.zips.get(hooks.resumeZipId) : undefined
+  const resuming = !!prev && prev.status === 'interrupted'
+  let zipId: number
+  if (resuming) {
+    zipId = prev!.id!
+    await db.zips.update(zipId, { status: 'importing', error: undefined, appVersion: VERSION, lastPhase: 'resuming', ...(keep ? { blob: file, originalKept: true } : {}) })
+  } else zipId = await db.zips.add({ name: zipName, size: file.size, blob: keep ? file : new Blob([]), originalKept: keep, appVersion: VERSION, lastPhase: 'opened ZIP', importedAt: Date.now(), status: 'importing', convIds: [], reports: [] })
+  let staged = false     // true once conversations/media exist for this ZIP => failures keep them so the import can be resumed
   let lastBeat = 0
   const progress: Hooks['progress'] = p => {
     hooks.progress(p)
@@ -94,7 +102,8 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
       const defaultDecision: Decision = candidates.length ? { action: 'merge', convId: candidates[0].convId, name: candidates[0].name, isGroup } : { action: 'new', name: nm, isGroup }
       return { chatFile: entry.name, name: nm, isGroup, messageCount: parsed.messages.length, firstTs: dLo, lastTs: dHi, candidates, defaultDecision }
     })
-    const decisions = await hooks.decide(zipName, units)
+    const savedOk = resuming && prev!.convIds.length === units.length && (prev!.decisions?.length ?? 0) === units.length
+    const decisions = savedOk ? (prev!.decisions as Decision[]) : await hooks.decide(zipName, units)
     cancelled()
 
     // 3. Resolve conversations.
@@ -103,6 +112,10 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
     for (let i = 0; i < units.length; i++) {
       const d = decisions[i] ?? units[i].defaultDecision
       const parsed = chats[i].parsed
+      if (savedOk) {
+        const conv = await db.conversations.get(prev!.convIds[i])
+        if (conv) { unitConv.push({ convId: conv.id!, merged: d.action === 'merge', meName: conv.meName, conv }); convIds.push(conv.id!); continue }
+      }
       if (d.action === 'merge' && d.convId) {
         const conv = (await db.conversations.get(d.convId))!
         const meName = conv.meName ?? guessMe(conv.name, parsed.senders, conv.isGroup, hooks.myName)
@@ -121,7 +134,8 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
         convIds.push(id)
       }
     }
-    await db.zips.update(zipId, { convIds })
+    await db.zips.update(zipId, { convIds, decisions })
+    staged = true
 
     // 4. Which unit references which media file? (names are matched case/space/invisible-char tolerant)
     const mediaByName = new Map<string, ZipEntry[]>()
@@ -147,6 +161,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
 
     // 5. Store media (one file in memory at a time).
     const attIdByEntry = new Map<string, number>()
+    if (resuming) await db.attachments.where('zipId').equals(zipId).each(a => { if (a.id !== undefined) attIdByEntry.set(a.path, a.id) })   // already stored by the earlier attempt
     let doneFiles = 0
     let orphan = units.map(() => 0)
     const failedByUnit: string[][] = units.map(() => [])
@@ -186,6 +201,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
       const ui = refUnit.get(e.name) ?? 0
       const isOrphan = !refUnit.has(e.name)
       if (isOrphan) orphan[ui]++
+      if (attIdByEntry.has(e.name)) { doneFiles++; continue }       // resumed: this file is already safely stored
       const nm = baseName(e.name)
       let mimeBlob: Blob
       try { mimeBlob = new Blob([await e.blob()], { type: mimeOf(nm) }) }
@@ -199,7 +215,8 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
     await flushBatch()
     cancelled()
 
-    // 6. Messages.
+    // 6. Messages (all-or-nothing: a partial set from an earlier attempt is removed first).
+    await db.messages.where('zipId').equals(zipId).delete()
     const reports: ImportReport[] = []
     let totalMsgs = chats.reduce((a, c) => a + c.parsed.messages.length, 0), doneMsgs = 0
     for (let ui = 0; ui < units.length; ui++) {
@@ -276,6 +293,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
   } catch (e) {
     const msg = (e as Error).message
     if (msg === '__cancelled__') { await rollbackZip(zipId, 'cancelled'); throw e }
+    if (staged) { await suspendZip(zipId, msg); throw e }       // keep stored media: choosing the same ZIP again continues from here
     await rollbackZip(zipId, 'failed', msg)
     throw e
   }

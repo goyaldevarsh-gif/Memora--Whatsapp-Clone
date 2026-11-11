@@ -100,3 +100,26 @@ describe('fill missing attachments', () => {
     expect(await db.attachments.count()).toBe(1)
   })
 })
+
+describe('resume after interruption', () => {
+  it('keeps stored media, hides partial chat, and a second run finishes without duplicates', async () => {
+    const z = await mk({ 'chat.txt': chat(['12/03/2022, 8:14 pm - Aditi: hi', '12/03/2022, 8:16 pm - Me: A.jpg (file attached)']), 'A.jpg': new Uint8Array([1, 2, 3]) })
+    const spy = vi.spyOn(db.messages, 'bulkAdd').mockImplementation((async () => { throw new Error('boom') }) as any)
+    await expect(importZipCore(z, 'Aditi.zip', hooks())).rejects.toThrow('boom')
+    spy.mockRestore()
+    const rec = (await db.zips.toArray())[0]
+    expect(rec.status).toBe('interrupted')
+    expect(await db.attachments.count()).toBe(1)
+    expect(await db.messages.count()).toBe(0)
+    let asked = 0
+    const r = await importZipCore(z, 'Aditi.zip', hooks({ resumeZipId: rec.id, decide: async (_n, u) => { asked++; return u.map(x => x.defaultDecision) } }))
+    expect(asked).toBe(0)                                     // saved decisions reused
+    expect(r.zipId).toBe(rec.id)
+    expect(await db.zips.count()).toBe(1)
+    expect(await db.attachments.count()).toBe(1)              // not stored twice
+    expect(await db.conversations.count()).toBe(1)
+    const msgs = await db.messages.toArray()
+    expect(msgs).toHaveLength(2); expect(msgs.find(m => m.attName)!.attId).toBeTruthy()
+    expect((await db.zips.get(rec.id!))!.status).toMatch(/done/)
+  })
+})

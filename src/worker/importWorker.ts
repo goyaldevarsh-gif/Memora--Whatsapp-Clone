@@ -2,7 +2,7 @@
 import { importZipCore, type Decision, type UnitInfo } from '../lib/importCore'
 
 type In =
-  | { type: 'import'; file: File; name: string; myName: string | null; keepOriginal: boolean }
+  | { type: 'import'; file: File; name: string; myName: string | null; keepOriginal: boolean; resumeZipId?: number }
   | { type: 'decision'; decisions: Decision[] }
 
 let resolveDecision: ((d: Decision[]) => void) | null = null
@@ -13,7 +13,7 @@ ctx.onmessage = async (ev: MessageEvent<In>) => {
   if (msg.type === 'decision') { resolveDecision?.(msg.decisions); resolveDecision = null; return }
   try {
     const result = await importZipCore(msg.file, msg.name, {
-      myName: msg.myName, keepOriginal: msg.keepOriginal,
+      myName: msg.myName, keepOriginal: msg.keepOriginal, resumeZipId: msg.resumeZipId,
       isCancelled: () => false, // cancellation = main thread terminates this worker, then rolls back by zipId
       progress: p => ctx.postMessage({ type: 'progress', ...p }),
       decide: (zipName: string, units: UnitInfo[]) => new Promise<Decision[]>(res => {

@@ -101,9 +101,22 @@ export async function rollbackZip(zipId: number, status: ZipRecord['status'] = '
   await log('warn', `Import rolled back (${status})${error ? ': ' + error : ''}`, zipId)
 }
 
+/** An import that stopped midway: drop its (partial) messages, KEEP the media already stored, and mark it resumable. */
+export async function suspendZip(zipId: number, reason: string) {
+  const zip = await db.zips.get(zipId); if (!zip) return
+  await db.messages.where('zipId').equals(zipId).delete()
+  for (const cid of zip.convIds) await recomputeConversation(cid)
+  await db.zips.update(zipId, { status: 'interrupted', error: `${reason} — nothing is lost: choose the same ZIP again (Import) and it continues from where it stopped, skipping files already saved.` })
+  await log('warn', `Import interrupted (resumable): ${reason}`, zipId)
+}
+
 /** Any import left in 'importing' state means the tab was closed/crashed mid-import: roll it back cleanly. */
 export async function recoverInterruptedImports() {
   const stuck = await db.zips.where('status').equals('importing').toArray()
-  for (const z of stuck) await rollbackZip(z.id!, 'failed', `Import was interrupted (the browser closed or killed the page — usually out of memory) during “${z.lastPhase ?? 'start-up, before any progress'}” on app version ${z.appVersion ?? 'unknown'}. Nothing was partially saved; please import again.`)
+  for (const z of stuck) {
+    const why = `The browser closed or killed the page (usually out of memory) during “${z.lastPhase ?? 'start-up, before any progress'}” on app version ${z.appVersion ?? 'unknown'}`
+    if (z.convIds.length) await suspendZip(z.id!, why)          // conversations/media exist: keep them for resume
+    else await rollbackZip(z.id!, 'failed', why + '. Nothing was saved; please import again.')
+  }
   return stuck.length
 }

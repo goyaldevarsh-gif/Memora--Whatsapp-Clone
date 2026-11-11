@@ -17,7 +17,7 @@ export function ChatList({ activeId, showArchived = false }: { activeId?: number
   const [filter, setFilter] = useState('')
   const list = useMemo(() => {
     if (!convs) return []
-    let l = convs.filter(c => (showArchived ? c.archived : !c.archived))
+    let l = convs.filter(c => c.messageCount > 0 && (showArchived ? c.archived : !c.archived))   // chats of a half-finished (resumable) import stay hidden until complete
     if (filter) l = l.filter(c => c.name.toLowerCase().includes(filter.toLowerCase()))
     const by: Record<Sort, (a: typeof l[0], b: typeof l[0]) => number> = {
       recent: (a, b) => (b.lastTs ?? 0) - (a.lastTs ?? 0), oldest: (a, b) => (a.firstTs ?? 0) - (b.firstTs ?? 0),
