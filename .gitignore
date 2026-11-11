@@ -1,0 +1,14 @@
+node_modules
+dist
+*.local
+.DS_Store
+# PRIVACY: never commit real conversations, media or backups
+*.zip
+!src/test/fixtures/**/*.zip
+memora-backup*
+*.memora
+*.opus
+*.vcf
+chat.txt
+_chat.txt
+WhatsApp Chat*
