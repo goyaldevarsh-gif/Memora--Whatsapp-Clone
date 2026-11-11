@@ -8,6 +8,7 @@ import { invalidateIndex } from '../lib/search'
 import { Btn, Card, Header, Modal, download, useToast } from './common'
 import { StorageBar } from './Data'
 import { nav } from './router'
+import { APP_VERSION, BUILD_TIME, checkForUpdate, useUpdateReady, applyUpdate } from '../lib/update'
 
 export function SettingsPage() {
   const pin = useLiveQuery(() => hasPin(), [])
@@ -17,6 +18,7 @@ export function SettingsPage() {
   const [wipe, setWipe] = useState(false)
   const [toast, toastEl] = useToast()
   const [name, setName] = useState<string | null>(null)
+  const upd = useUpdateReady()
   const Row = ({ ic, label, sub, to, onClick }: { ic: React.ReactNode; label: string; sub?: string; to?: string; onClick?: () => void }) =>
     <button onClick={() => (to ? nav(to) : onClick?.())} className="w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-white/5 border-b border-line/40 last:border-0"><span className="text-accent">{ic}</span><div className="flex-1 min-w-0"><div>{label}</div>{sub && <div className="text-xs text-mute">{sub}</div>}</div><ChevronRight size={17} className="text-mute" /></button>
   return <div className="h-full flex flex-col bg-bg"><Header title="Settings" />
@@ -35,6 +37,7 @@ export function SettingsPage() {
       </Card>
       <Card className="p-4 text-sm text-mute space-y-1.5"><div className="flex items-center gap-2 font-medium text-ink"><Info size={18} className="text-accent" />About Memora</div>
         <div>Your conversations, preserved forever. Everything stays in this browser's IndexedDB: no servers, analytics, ads or AI APIs. Works offline once loaded.</div>
+        <div>Version <b>{APP_VERSION}</b>{BUILD_TIME ? ` · built ${new Date(BUILD_TIME).toLocaleString()}` : ''} · <button className="text-accent" onClick={async () => { await checkForUpdate(); toast(upd ? 'Update ready' : 'Checked — you are on the latest version') }}>Check for updates</button>{upd && <> · <button className="text-accent font-semibold" onClick={() => applyUpdate()}>Update now</button></>}</div>
         <div>The PIN lock hides the app but does <b>not</b> encrypt the stored data.</div></Card>
       <Card className="p-4"><div className="flex items-center gap-2 font-medium text-err mb-1"><Trash2 size={18} />Danger zone</div><div className="text-xs text-mute mb-3">Deleting all data cannot be undone. A backup download is required first.</div><Btn kind="danger" onClick={() => setWipe(true)}>Delete all Memora data…</Btn></Card>
     </div>

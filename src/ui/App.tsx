@@ -13,6 +13,8 @@ import { ImportPage } from './ImportPage'
 import { SettingsPage } from './SettingsPage'
 import { BackupPage, DuplicatesPage, FlaggedPage, HistoryPage, IntegrityPage } from './Data'
 import { Btn } from './common'
+import { applyUpdate, useUpdateReady } from '../lib/update'
+import { useQueue } from '../lib/importClient'
 import { nav, useIsDesktop, useRoute } from './router'
 
 const SECTIONS = [['chats', 'Chats', MessageSquareText], ['media', 'Media', ImageIcon], ['files', 'Files', FileText], ['archive', 'Archive', Archive], ['settings', 'Settings', Settings]] as const
@@ -41,7 +43,16 @@ function LockScreen({ onUnlock }: { onUnlock: () => void }) {
   </div>
 }
 
-export default function App() {
+function UpdateBanner() {
+  const ready = useUpdateReady()
+  const busy = useQueue().some(i => ['running', 'waiting'].includes(i.status))
+  if (!ready) return null
+  return <div className="fixed top-0 inset-x-0 z-[90] pt-safe bg-accent text-bg"><div className="px-4 py-2.5 flex items-center gap-3 text-sm font-medium">
+    <span className="flex-1">{busy ? 'Update ready — apply it after the import finishes' : 'A new version of Memora is ready'}</span>
+    <button disabled={busy} onClick={() => applyUpdate()} className="bg-bg text-accent rounded-lg px-3.5 py-1.5 font-semibold disabled:opacity-40">Update now</button></div></div>
+}
+
+function AppInner() {
   const r = useRoute()
   const desktop = useIsDesktop()
   const [locked, setLocked] = useState<boolean | null>(null)
@@ -109,3 +120,5 @@ export default function App() {
     {isSection && <nav className="pb-safe bg-bg2 border-t border-line flex">{SECTIONS.map(([k, l, Ic]) => <button key={k} onClick={() => nav(k)} className={`flex-1 py-2 flex flex-col items-center gap-0.5 text-[10.5px] ${activeSection === k ? 'text-accent' : 'text-mute'}`}><Ic size={22} />{l}</button>)}</nav>}
   </div>
 }
+
+export default function App() { return <><UpdateBanner /><AppInner /></> }

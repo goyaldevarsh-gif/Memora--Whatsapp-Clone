@@ -1,8 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { registerSW } from 'virtual:pwa-register'
+import { initUpdates } from './lib/update'
 import App from './ui/App'
 import './index.css'
 
-registerSW({ immediate: true })
+initUpdates()
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>)

@@ -3,12 +3,15 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 // Relative base => works on any GitHub Pages repo path (and on localhost / custom domains).
+const BUILD = process.env.GITHUB_SHA?.slice(0, 7) ?? new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')
+
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(BUILD), __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
   base: process.env.VITE_BASE ?? './',
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       includeAssets: ['icons/*.png', 'icons/icon.svg'],
       manifest: {
         name: 'Memora',
