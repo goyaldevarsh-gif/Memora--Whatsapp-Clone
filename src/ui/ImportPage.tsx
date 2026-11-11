@@ -7,6 +7,7 @@ import { answerDecision, cancelAll, cancelCurrent, clearFinished, enqueue, impor
 import { fmtDate, fmtNum, fmtSize } from '../lib/format'
 import { Btn, Card, Header } from './common'
 import { nav } from './router'
+import { startBackupImport, stopBackupImport, useBackupJob } from '../lib/iosJob'
 
 export function ImportPage() {
   const q = useQueue()
@@ -16,7 +17,7 @@ export function ImportPage() {
   const dropAll = async (dt: DataTransfer) => {   // dropped folders are walked recursively (desktop browsers)
     const out: File[] = []
     const walk = async (en: any): Promise<void> => {
-      if (en.isFile) out.push(await new Promise<File>((res, rej) => en.file(res, rej)))
+      if (en.isFile) { const f = await new Promise<File>((res, rej) => en.file(res, rej)); try { Object.defineProperty(f, 'webkitRelativePath', { value: String(en.fullPath).replace(/^\//, '') }) } catch { /* keep */ } out.push(f) }
       else if (en.isDirectory) { const rd = en.createReader(); for (;;) { const part: any[] = await new Promise((res, rej) => rd.readEntries(res, rej)); if (!part.length) break; for (const c of part) await walk(c) } }
     }
     const ents = [...dt.items].map(i => (i as any).webkitGetAsEntry?.()).filter(Boolean)
@@ -49,6 +50,7 @@ export function ImportPage() {
           {!active && done > 0 && <Btn className="w-full" onClick={() => nav('chats')}>View chats</Btn>}
         </div>}
 
+        <IphoneBackup />
         <KeepOriginal />
         <Card className="p-4 text-sm text-mute space-y-1.5">
           <div className="font-semibold text-ink flex items-center gap-2"><HelpCircle size={16} />How to export from WhatsApp</div>
@@ -126,4 +128,26 @@ function ImportHistoryMini() {
   const n = useLiveQuery(() => db.zips.count(), [])
   if (!n) return null
   return <button onClick={() => nav('history')} className="w-full text-left bg-surface rounded-2xl px-4 py-3.5 flex justify-between"><span>Import history &amp; reports</span><span className="text-mute">{n} ZIP{n === 1 ? '' : 's'}</span></button>
+}
+
+function IphoneBackup() {
+  const j = useBackupJob(); const pick = useRef<HTMLInputElement>(null); const [open, setOpen] = useState(false)
+  return <Card className="p-4 text-sm space-y-3">
+    <div className="font-semibold text-base">Import a full iPhone backup (iTunes / Apple Devices on Windows)</div>
+    <div className="text-xs text-mute">Imports ALL WhatsApp chats and their media straight from a computer backup folder — no per-chat export needed. Chat-by-chat: if it stops, pick the same folder again and it continues.</div>
+    <button className="text-xs text-accent" onClick={() => setOpen(!open)}>{open ? 'Hide' : 'Show'} step-by-step</button>
+    {open && <ol className="list-decimal pl-5 space-y-1.5 text-xs text-mute">
+      <li>Windows laptop pe <b className="text-ink">Apple Devices</b> (Microsoft Store) ya <b className="text-ink">iTunes</b> install karo, iPhone cable se jodo, phone pe “Trust” dabao.</li>
+      <li>Phone/Summary page pe <b className="text-ink">“Encrypt local backup” UNTICK</b> rakho (tick hoga to Memora padh nahi payega). Backup location: <i>This computer</i>.</li>
+      <li><b className="text-ink">Back Up Now</b> dabao, poora hone do (6-7 GB mein kaafi time lagta hai, laptop charging pe rakho).</li>
+      <li>File Explorer mein ye path kholo: <code className="text-ink">C:\Users\&lt;tumhara naam&gt;\Apple\MobileSync\Backup</code> (iTunes wale mein: <code className="text-ink">...\AppData\Roaming\Apple Computer\MobileSync\Backup</code>). Andar ek lambe code wala folder hoga.</li>
+      <li>Memora ko laptop ke <b className="text-ink">Chrome/Edge</b> mein kholo, yahan <b className="text-ink">Choose backup folder</b> dabao, wo lambe code wala folder chuno, “Upload/Allow” dabao.</li>
+      <li>Laptop sleep na ho, tab khula rakho. Complete hone pe sab chats list mein aa jayenge. Phir <b className="text-ink">Backup</b> page se Memora ka apna backup bhi bana lo.</li>
+    </ol>}
+    <input ref={pick} type="file" multiple hidden {...({ webkitdirectory: '', directory: '' } as object)} onChange={e => { const fl = e.target.files ? [...e.target.files] : []; e.target.value = ''; if (fl.length) startBackupImport(fl) }} />
+    <Btn kind="ghost" className="w-full" disabled={j.state === 'running'} onClick={() => pick.current?.click()}>{j.state === 'running' ? `${j.msg} (${j.pct}%)` : 'Choose backup folder'}</Btn>
+    {j.state === 'running' && <><div className="h-1.5 bg-bg rounded-full overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: `${j.pct}%` }} /></div><button onClick={stopBackupImport} className="text-xs text-err">Stop (finished chats stay, you can resume)</button></>}
+    {j.error && <div className="text-xs text-err">{j.error}</div>}
+    {j.state === 'done' && j.reports && <><div className="text-xs text-accent">{j.reports.length} chat(s) imported.</div><Reports reports={j.reports} /></>}
+  </Card>
 }

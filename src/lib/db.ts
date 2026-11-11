@@ -104,7 +104,9 @@ export async function rollbackZip(zipId: number, status: ZipRecord['status'] = '
 /** An import that stopped midway: drop its (partial) messages, KEEP the media already stored, and mark it resumable. */
 export async function suspendZip(zipId: number, reason: string) {
   const zip = await db.zips.get(zipId); if (!zip) return
-  await db.messages.where('zipId').equals(zipId).delete()
+  // chats already finished (iPhone-backup imports) keep their messages; everything else of this ZIP is dropped
+  const doneConvs = new Set(((zip.decisions ?? []) as { convId?: number; done?: boolean }[]).filter(d => d.done && d.convId !== undefined).map(d => d.convId!))
+  await db.messages.where('zipId').equals(zipId).filter(m => !doneConvs.has(m.convId)).delete()
   for (const cid of zip.convIds) await recomputeConversation(cid)
   await db.zips.update(zipId, { status: 'interrupted', error: `${reason} — nothing is lost: choose the same ZIP again (Import) and it continues from where it stopped, skipping files already saved.` })
   await log('warn', `Import interrupted (resumable): ${reason}`, zipId)
