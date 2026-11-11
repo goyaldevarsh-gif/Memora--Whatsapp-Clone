@@ -82,3 +82,21 @@ describe('storage failures (iOS Safari IndexedDB blob errors)', () => {
     expect(await db.attachments.count()).toBe(1)
   })
 })
+
+import { fillMissingAttachments } from '../lib/importCore'
+describe('fill missing attachments', () => {
+  it('attaches previously refused files without duplicating any message', async () => {
+    const z = await mk({ 'chat.txt': chat(['12/03/2022, 8:14 pm - Aditi: hi', '12/03/2022, 8:16 pm - Me: BAD.jpg (file attached)']), 'BAD.jpg': new Uint8Array([3, 4, 5]) })
+    const realAdd = db.attachments.add.bind(db.attachments), realBulk = db.attachments.bulkAdd.bind(db.attachments)
+    vi.spyOn(db.attachments, 'bulkAdd').mockImplementation((async () => { throw new Error('UnknownError') }) as any)
+    vi.spyOn(db.attachments, 'add').mockImplementation((async () => { throw new Error('UnknownError') }) as any)
+    await importZipCore(z, 'Aditi.zip', hooks())
+    vi.restoreAllMocks(); void realAdd; void realBulk
+    expect(await db.attachments.count()).toBe(0)
+    const r = await fillMissingAttachments(z, 'Aditi.zip')
+    expect(r).toMatchObject({ filled: 1, stillMissing: 0, failed: [] })
+    const msgs = await db.messages.toArray()
+    expect(msgs).toHaveLength(2); expect(msgs.find(m => m.attName === 'BAD.jpg')!.attId).toBeTruthy()
+    expect(await db.attachments.count()).toBe(1)
+  })
+})

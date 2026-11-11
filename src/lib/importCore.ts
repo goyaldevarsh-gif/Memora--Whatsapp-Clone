@@ -282,3 +282,56 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
 }
 
 export { previewOf }
+
+/** Store one attachment with retries (reopen DB, in-memory copy). Returns the new id or null if the browser keeps refusing. */
+export async function storeAttachmentResilient(att: Attachment): Promise<{ id: number | null; error: string }> {
+  let lastErr = ''
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, 400 * attempt))
+        try { db.close(); await db.open() } catch { /* surfaced below */ }
+        if (att.blob.size < 300 * 1024 * 1024) att = { ...att, blob: new Blob([await att.blob.arrayBuffer()], { type: att.blob.type }) }
+      }
+      return { id: (await db.attachments.add(att)) as number, error: '' }
+    } catch (e) { lastErr = (e as Error).message }
+  }
+  return { id: null, error: lastErr }
+}
+
+export interface FillResult { filled: number; stillMissing: number; failed: string[]; notInZip: number }
+/**
+ * Attach files that earlier imports could not store. Messages are NEVER re-imported or duplicated:
+ * only messages that reference a filename but have no attachment get linked to the matching file in the ZIP.
+ */
+export async function fillMissingAttachments(file: Blob, zipName: string, onProgress: (pct: number, msg: string) => void = () => {}): Promise<FillResult> {
+  const entries = (await openZip(file)).filter(f => !f.dir && !/(^|\/)(__MACOSX|\.DS_Store)/.test(f.name) && !/\.txt$/i.test(f.name))
+  const byName = new Map<string, ZipEntry>()
+  for (const e of entries) { const k = normName(baseName(e.name)); if (!byName.has(k)) byName.set(k, e) }
+  const need = new Map<string, import('./types').Message[]>()     // key: convId|normalised filename
+  let totalNeed = 0
+  await db.messages.filter(m => !!m.attName && !m.attId && m.attMissing === true).each(m => {
+    const k = `${m.convId}|${normName(baseName(m.attName!))}`; (need.get(k) ?? need.set(k, []).get(k)!).push(m); totalNeed++
+  })
+  const existingZip = await db.zips.where('name').equals(zipName).first()
+  const zipId = existingZip?.id ?? await db.zips.add({ name: zipName, size: file.size, blob: new Blob([]), originalKept: false, appVersion: VERSION, importedAt: Date.now(), status: 'done', convIds: [], reports: [] })
+  let filled = 0, notInZip = 0, i = 0; const failed: string[] = []; const touched = new Set<number>()
+  for (const [key, msgs] of need) {
+    onProgress(Math.round((i++ / Math.max(1, need.size)) * 100), `Matching ${i}/${need.size}`)
+    const [convStr, nm] = [key.slice(0, key.indexOf('|')), key.slice(key.indexOf('|') + 1)]
+    const entry = byName.get(nm)
+    if (!entry) { notInZip += msgs.length; continue }
+    let blob: Blob
+    try { blob = new Blob([await entry.blob()], { type: mimeOf(entry.name) }) } catch { failed.push(baseName(entry.name)); continue }
+    const att: Attachment = { convId: +convStr, zipId, name: baseName(entry.name), path: entry.name, mime: mimeOf(entry.name), size: blob.size, kind: extKind(entry.name), blob, ts: msgs[0].ts }
+    const r = await storeAttachmentResilient(att)
+    if (r.id === null) { failed.push(att.name); await log('warn', `Could not store "${att.name}" while filling missing files: ${r.error}`, zipId); continue }
+    for (const m of msgs) await db.messages.update(m.id!, { attId: r.id, attMissing: undefined })
+    filled += msgs.length; touched.add(+convStr)
+  }
+  for (const c of touched) await recomputeConversation(c)
+  const stillMissing = totalNeed - filled
+  await log('info', `Filled ${filled} missing attachment(s) from ${zipName}; ${stillMissing} still missing`, zipId)
+  onProgress(100, 'Done')
+  return { filled, stillMissing, failed, notInZip }
+}

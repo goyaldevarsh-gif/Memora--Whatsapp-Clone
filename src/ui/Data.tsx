@@ -10,6 +10,7 @@ import { fmtDateTime, fmtNum, fmtSize } from '../lib/format'
 import { Btn, Card, Empty, Header, download, useToast } from './common'
 import { nav } from './router'
 import { Reports } from './ImportPage'
+import { fillMissingAttachments } from '../lib/importCore'
 import { MessageDetails } from './ChatView'
 import type { Message } from '../lib/types'
 
@@ -141,6 +142,14 @@ export function FlaggedPage() {
     return { flagged: all.filter(m => !m.reviewed).slice(0, 500).map(m => ({ m, conv: convs.get(m.convId) })), missing: missing.slice(0, 500).map(m => ({ m, conv: convs.get(m.convId) })) }
   }, [])
   const [detail, setDetail] = useState<Message | null>(null)
+  const [fill, setFill] = useState<{ pct: number; msg: string } | null>(null), [res, setRes] = useState<string | null>(null)
+  const pick = useRef<HTMLInputElement>(null)
+  const runFill = async (f: File) => {
+    setRes(null); setFill({ pct: 0, msg: 'Reading ZIP…' })
+    try { const r = await fillMissingAttachments(f, f.name, (pct, msg) => setFill({ pct, msg })); setRes(`Attached ${r.filled} file(s). Still missing: ${r.stillMissing}${r.notInZip ? ` (${r.notInZip} not present in this ZIP)` : ''}${r.failed.length ? `. Browser refused: ${r.failed.slice(0, 5).join(', ')}` : ''}.`) }
+    catch (e) { setRes('Failed: ' + (e as Error).message) }
+    setFill(null)
+  }
   if (!rows) return null
   const empty = !rows.flagged.length && !rows.missing.length
   return <div className="h-full flex flex-col bg-bg"><Header title="Needs review" sub="Unparsed text, unreadable timestamps, missing attachments" onBack backTo="settings" />
@@ -150,7 +159,12 @@ export function FlaggedPage() {
       {rows.flagged.map(({ m, conv }) => <Card key={m.id} className="p-3 text-sm space-y-1.5"><div className="text-xs text-warn">{m.flagged}</div><div className="text-xs text-mute">{conv} · raw timestamp “{m.rawTs || '—'}” · {m.srcFile}:{m.lineNo}</div>
         <pre className="text-xs bg-bg rounded-lg p-2 whitespace-pre-wrap break-words max-h-28 overflow-auto">{m.raw}</pre>
         <div className="flex gap-3"><button className="text-accent text-sm flex items-center gap-1" onClick={() => nav(`chat/${m.convId}?m=${m.id}`)}><Eye size={14} />Open in chat</button><button className="text-sm text-mute" onClick={() => db.messages.update(m.id!, { reviewed: true })}>Mark reviewed</button><button className="text-sm text-mute" onClick={() => setDetail(m)}>Details</button></div></Card>)}
-      {rows.missing.length > 0 && <div className="text-xs uppercase text-mute px-1 pt-3">Attachments referenced but not in the ZIP ({rows.missing.length})</div>}
+      {rows.missing.length > 0 && <Card className="p-3 space-y-2"><div className="text-sm font-semibold">Add missing files from a ZIP</div>
+        <div className="text-xs text-mute">Pick the original export ZIP again. Memora only attaches files for the messages listed below — messages are never imported twice. You can repeat this with any ZIP (e.g. if the first try was interrupted).</div>
+        <Btn kind="ghost" className="w-full" disabled={!!fill} onClick={() => pick.current?.click()}>{fill ? `${fill.msg} (${fill.pct}%)` : 'Choose ZIP…'}</Btn>
+        <input ref={pick} hidden type="file" accept=".zip,application/zip" onChange={e => { const f = e.target.files?.[0]; if (f) runFill(f); e.target.value = '' }} />
+        {res && <div className="text-xs text-accent">{res}</div>}</Card>}
+      {rows.missing.length > 0 && <div className="text-xs uppercase text-mute px-1 pt-3">Attachments referenced but not stored ({rows.missing.length})</div>}
       {rows.missing.map(({ m, conv }) => <Card key={m.id} className="p-3 text-sm"><div className="font-medium break-all">{m.attName}</div><div className="text-xs text-mute">{conv} · {fmtDateTime(m.ts, m.rawTs)}</div><button className="text-accent text-sm mt-1" onClick={() => nav(`chat/${m.convId}?m=${m.id}`)}>Open in chat</button></Card>)}
     </div>{detail && <MessageDetails m={detail} onClose={() => setDetail(null)} />}</div>
 }
