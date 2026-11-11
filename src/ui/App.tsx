@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { MessageSquareText, Image as ImageIcon, FileText, Archive, Settings, Lock, Upload, Search as SearchIcon, ShieldCheck, WifiOff, FolderUp } from 'lucide-react'
 import { db, recoverInterruptedImports } from '../lib/db'
+import { repairAttachedLines } from '../lib/repair'
 import { ensureIndex } from '../lib/search'
 import { hasPin, verifyPin } from '../lib/lock'
 import { ChatList } from './ChatList'
@@ -60,7 +61,7 @@ function AppInner() {
   const counts = useLiveQuery(async () => ({ c: await db.conversations.count(), z: await db.zips.count() }), [])
   const [online, setOnline] = useState(navigator.onLine)
 
-  useEffect(() => { hasPin().then(h => setLocked(h)); recoverInterruptedImports(); const on = () => setOnline(true), off = () => setOnline(false); addEventListener('online', on); addEventListener('offline', off); return () => { removeEventListener('online', on); removeEventListener('offline', off) } }, [])
+  useEffect(() => { hasPin().then(h => setLocked(h)); recoverInterruptedImports().then(() => repairAttachedLines()).catch(() => {}); const on = () => setOnline(true), off = () => setOnline(false); addEventListener('online', on); addEventListener('offline', off); return () => { removeEventListener('online', on); removeEventListener('offline', off) } }, [])
   useEffect(() => { if (counts && counts.c > 0) setTimeout(() => ensureIndex(), 300) }, [counts?.c])
   useEffect(() => {
     const f = async () => { if (document.hidden) hiddenAt.current = Date.now(); else if (hiddenAt.current && Date.now() - hiddenAt.current > 60000 && await hasPin()) setLocked(true) }

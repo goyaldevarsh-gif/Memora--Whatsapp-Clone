@@ -123,3 +123,16 @@ describe('resume after interruption', () => {
     expect((await db.zips.get(rec.id!))!.status).toMatch(/done/)
   })
 })
+
+import { repairAttachedLines } from '../lib/repair'
+describe('repair of older imports', () => {
+  it('links text-only "<attached:>" messages to stored files and fixes document kind', async () => {
+    const z = await mk({ 'chat.txt': chat(['12/03/2022, 8:14 pm - Aditi: hi']), '0001-Report.pdf': new Uint8Array([1, 2]) })
+    await importZipCore(z, 'Aditi.zip', hooks())
+    const conv = (await db.conversations.toArray())[0]
+    await db.messages.add({ convId: conv.id!, seq: 9, sortTs: 5, ts: 5, rawTs: '', sender: 'Aditi', isMe: false, body: 'Report.pdf • 1 page <attached: 0001-Report.pdf>', kind: 'text', zipId: 1, srcFile: 'chat.txt', lineNo: 9, raw: '', dupKey: 'x' })
+    expect(await repairAttachedLines()).toBe(1)
+    const m = (await db.messages.toArray()).find(x => x.attName === '0001-Report.pdf')!
+    expect(m.kind).toBe('document'); expect(m.attId).toBeTruthy(); expect(m.body).toContain('Report.pdf • 1 page')
+  })
+})

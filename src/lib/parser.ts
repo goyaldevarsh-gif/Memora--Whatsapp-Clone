@@ -211,7 +211,14 @@ export function parseWhatsAppText(text: string): ParseResult {
 function finalize(m: ParsedMessage) {
   if (m.kind === 'system' || m.kind === 'unparsed') return
   // Android puts the filename on line 1 and an optional caption on following lines.
-  const first = m.body.split('\n')[0]
+  let first = m.body.split('\n')[0]
+  // iPhone documents: "Report.pdf • 1 page <attached: 00000012-Report.pdf>" -> file line first, the text becomes the caption.
+  const pre = /^(.*\S)\s*<attached:\s*(.+?)>$/i.exec(norm(first).trim())
+  if (pre && /\.[A-Za-z0-9]{1,8}$/.test(pre[2].trim()) && !/[\r\n]/.test(pre[2])) {
+    const rest = m.body.split('\n').slice(1)
+    m.body = [`<attached: ${pre[2].trim()}>`, [pre[1], ...rest].join('\n')].join('\n')
+    first = m.body.split('\n')[0]
+  }
   const c = classify(first)
   m.kind = c.kind
   if (c.attName) m.attName = c.attName

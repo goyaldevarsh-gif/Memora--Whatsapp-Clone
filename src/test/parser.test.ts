@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseWhatsAppText } from '../lib/parser'
+import { parseWhatsAppText, captionOf } from '../lib/parser'
 import { nameFromFile, matchKey } from '../lib/names'
 
 const android = `12/03/2022, 8:14 pm - Messages and calls are end-to-end encrypted. No one outside of this chat can read them.
@@ -68,5 +68,13 @@ describe('parser', () => {
     expect(nameFromFile('Chat with Rahul (1).zip')).toBe('Rahul')
     expect(nameFromFile('Family Group.zip')).toBe('Family Group')
     expect(matchKey('Aditi_2')).toBe('aditi'); expect(matchKey('Aditi Old Chat')).toBe('aditi'); expect(matchKey('Rahul')).not.toBe(matchKey('Aditi'))
+  })
+})
+
+describe('iPhone document line with trailing <attached:>', () => {
+  it('turns "Name.pdf • 1 page <attached: 0001-Name.pdf>" into an attachment with the text as caption', () => {
+    const r = parseWhatsAppText('[12/03/2022, 8:14:05 pm] Me: Report.pdf • 1 page <attached: 00003091-Report.pdf>')
+    expect(r.messages[0]).toMatchObject({ kind: 'document', attName: '00003091-Report.pdf' })
+    expect(captionOf(r.messages[0])).toBe('Report.pdf • 1 page')
   })
 })

@@ -17,7 +17,18 @@ export function ImageThumb({ attId, onOpen, className = '', cover = true }: { at
   const att = useAttachment(attId)
   const url = useObjectUrl(att?.blob)
   const [err, setErr] = useState(false)
+  const [retry, setRetry] = useState<string | null>(null)
+  const [broken, setBroken] = useState(false)
+  // iOS Safari sometimes hands back a blob it cannot decode: re-wrap the bytes with an explicit type once; if the bytes are empty, say so.
+  useEffect(() => {
+    if (!err || !att || retry || broken) return
+    let u: string | null = null
+    att.blob.arrayBuffer().then(ab => { if (!ab.byteLength) return setBroken(true); u = URL.createObjectURL(new Blob([ab], { type: att.mime.startsWith('image/') ? att.mime : 'image/jpeg' })); setRetry(u) }).catch(() => setBroken(true))
+    return () => { if (u) URL.revokeObjectURL(u) }
+  }, [err, att, retry, broken])
   if (!att) return <div className={`bg-surface animate-pulse ${className}`} style={{ minHeight: 120 }} />
+  if (broken) return <div><FileCard att={att} compact /><div className="text-[11px] text-warn mt-1">This stored copy cannot be read on this device. Try Download, or import this ZIP again.</div></div>
+  if (err && retry) return <img src={retry} alt={att.name} onClick={onOpen} onError={() => setBroken(true)} className={`${cover ? 'object-cover' : 'object-contain'} cursor-zoom-in ${className}`} />
   if (err || !url) return <FileCard att={att} compact />
   return <img src={url} alt={att.name} loading="lazy" onError={() => setErr(true)} onClick={onOpen} className={`${cover ? 'object-cover' : 'object-contain'} cursor-zoom-in ${className}`} />
 }
