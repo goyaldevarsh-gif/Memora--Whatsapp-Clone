@@ -32,13 +32,16 @@ export function clearFinished() { items = items.filter(i => ['queued', 'running'
 async function pump() {
   if (running) return
   running = true
+  // keep the screen on: iOS suspends/kills a backgrounded page mid-import
+  let lock: { release(): Promise<void> } | null = null
+  try { lock = await (navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } }).wakeLock?.request('screen') ?? null } catch { /* not allowed */ }
   try {
     for (;;) {
       const it = items.find(i => i.status === 'queued')
       if (!it) break
       await runOne(it)
     }
-  } finally { running = false }
+  } finally { running = false; lock?.release().catch(() => {}) }
 }
 
 function runOne(it: QueueItem): Promise<void> {

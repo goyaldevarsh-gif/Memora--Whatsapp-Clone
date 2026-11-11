@@ -41,7 +41,12 @@ export function dupKeyOf(m: { ts: number | null; rawTs: string; sender: string; 
   return `${m.ts ?? m.rawTs}|${m.sender.toLowerCase()}|${att}|${text}`
 }
 
-const CHUNK = 1500
+const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'test'
+// Safari/iOS exposes no navigator.deviceMemory and kills pages that use a lot of RAM: use smaller write batches there.
+const LOW_MEM = typeof navigator !== 'undefined' && !(navigator as unknown as { deviceMemory?: number }).deviceMemory
+const CHUNK = LOW_MEM ? 500 : 1500
+const BATCH_FILES = LOW_MEM ? 4 : 25
+const BATCH_BYTES = (LOW_MEM ? 10 : 40) * 1024 * 1024
 
 export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): Promise<ImportResult> {
   const cancelled = () => { if (hooks.isCancelled()) throw new Error('__cancelled__') }
@@ -49,7 +54,13 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
 
   // 1. Preserve the original ZIP first, untouched.
   const keep = hooks.keepOriginal !== false
-  const zipId = await db.zips.add({ name: zipName, size: file.size, blob: keep ? file : new Blob([]), originalKept: keep, importedAt: Date.now(), status: 'importing', convIds: [], reports: [] })
+  const zipId = await db.zips.add({ name: zipName, size: file.size, blob: keep ? file : new Blob([]), originalKept: keep, appVersion: VERSION, lastPhase: 'opened ZIP', importedAt: Date.now(), status: 'importing', convIds: [], reports: [] })
+  let lastBeat = 0
+  const progress: Hooks['progress'] = p => {
+    hooks.progress(p)
+    const now = Date.now()
+    if (now - lastBeat > 1500) { lastBeat = now; db.zips.update(zipId, { lastPhase: p.msg }).catch(() => {}) }
+  }
   try {
     let all: ZipEntry[]
     try { all = await openZip(file) } catch (e) { throw new Error(`Not a readable ZIP file (${(e as Error).message}).`) }
@@ -57,7 +68,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
 
     const entries = all.filter(f => !f.dir && !/(^|\/)(__MACOSX|\.DS_Store)/.test(f.name) && !/(^|\/)\._/.test(f.name))
     const txtEntries = entries.filter(f => /\.txt$/i.test(f.name))
-    hooks.progress({ phase: 'parse', pct: 8, msg: `Parsing ${txtEntries.length} text file(s)…` })
+    progress({ phase: 'parse', pct: 8, msg: `Parsing ${txtEntries.length} text file(s)…` })
 
     const chats: { entry: ZipEntry; parsed: ParseResult }[] = []
     const nonChatTxt = new Set<string>()
@@ -154,9 +165,9 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
       const mimeBlob = new Blob([blob], { type: mimeOf(nm) })
       batch.push({ convId: unitConv[ui].convId, zipId, name: nm, path: e.name, mime: mimeOf(nm), size: mimeBlob.size, kind: extKind(nm), blob: mimeBlob, orphan: isOrphan || undefined, ts: refTs.get(e.name) ?? null })
       batchKeys.push(e.name); batchBytes += mimeBlob.size
-      if (batch.length >= 25 || batchBytes > 40 * 1024 * 1024) await flushBatch()
+      if (batch.length >= BATCH_FILES || batchBytes > BATCH_BYTES) await flushBatch()
       doneFiles++
-      hooks.progress({ phase: 'media', pct: 15 + Math.round((doneFiles / Math.max(1, mediaEntries.length)) * 55), msg: `Saving media ${doneFiles}/${mediaEntries.length}` })
+      progress({ phase: 'media', pct: 15 + Math.round((doneFiles / Math.max(1, mediaEntries.length)) * 55), msg: `Saving media ${doneFiles}/${mediaEntries.length}` })
     }
     await flushBatch()
     cancelled()
@@ -207,7 +218,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
         cancelled()
         await db.messages.bulkAdd(rows.slice(i, i + CHUNK))
         doneMsgs += Math.min(CHUNK, rows.length - i)
-        hooks.progress({ phase: 'messages', pct: 70 + Math.round((doneMsgs / Math.max(1, totalMsgs)) * 27), msg: `Saving messages ${doneMsgs.toLocaleString()}/${totalMsgs.toLocaleString()}` })
+        progress({ phase: 'messages', pct: 70 + Math.round((doneMsgs / Math.max(1, totalMsgs)) * 27), msg: `Saving messages ${doneMsgs.toLocaleString()}/${totalMsgs.toLocaleString()}` })
       }
       await recomputeConversation(convId)
       const { lo: rLo, hi: rHi } = minMax(parsed.messages.map(m => m.ts))
@@ -232,7 +243,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
     const status: ZipRecord['status'] = hasIssues ? 'done_with_warnings' : 'done'
     await db.zips.update(zipId, { status, reports, convIds })
     await log(hasIssues ? 'warn' : 'info', `Imported ${zipName}: ${reports.map(r => `${r.conversation} (${r.parsed} msgs)`).join(', ')}`, zipId)
-    hooks.progress({ phase: 'done', pct: 100, msg: 'Done' })
+    progress({ phase: 'done', pct: 100, msg: 'Done' })
     return { zipId, status, reports, convIds }
   } catch (e) {
     const msg = (e as Error).message

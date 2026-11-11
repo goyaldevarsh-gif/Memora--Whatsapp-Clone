@@ -104,6 +104,6 @@ export async function rollbackZip(zipId: number, status: ZipRecord['status'] = '
 /** Any import left in 'importing' state means the tab was closed/crashed mid-import: roll it back cleanly. */
 export async function recoverInterruptedImports() {
   const stuck = await db.zips.where('status').equals('importing').toArray()
-  for (const z of stuck) await rollbackZip(z.id!, 'failed', 'Import was interrupted (app closed or crashed). Nothing was partially saved; please import again.')
+  for (const z of stuck) await rollbackZip(z.id!, 'failed', `Import was interrupted (the browser closed or killed the page — usually out of memory) during “${z.lastPhase ?? 'start-up, before any progress'}” on app version ${z.appVersion ?? 'unknown'}. Nothing was partially saved; please import again.`)
   return stuck.length
 }

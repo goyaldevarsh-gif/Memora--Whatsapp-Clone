@@ -93,6 +93,8 @@ export interface ZipRecord {
   size: number
   blob: Blob
   importedAt: number
+  appVersion?: string
+  lastPhase?: string               // last checkpoint written during import (shows where an interrupted import died)
   originalKept: boolean            // false => the (large) original was not copied into Memora; user still has it on their device
   status: 'importing' | 'done' | 'done_with_warnings' | 'failed' | 'cancelled'
   error?: string
