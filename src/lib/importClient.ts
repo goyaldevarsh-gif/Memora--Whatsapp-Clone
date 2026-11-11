@@ -34,6 +34,7 @@ async function pump() {
   running = true
   // keep the screen on: iOS suspends/kills a backgrounded page mid-import
   let lock: { release(): Promise<void> } | null = null
+  try { await navigator.storage?.persist?.() } catch { /* best effort: asks the browser not to evict the archive */ }
   try { lock = await (navigator as unknown as { wakeLock?: { request(t: string): Promise<{ release(): Promise<void> }> } }).wakeLock?.request('screen') ?? null } catch { /* not allowed */ }
   try {
     for (;;) {
