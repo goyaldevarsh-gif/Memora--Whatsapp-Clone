@@ -65,3 +65,20 @@ describe('import engine', () => {
     expect(first.map(m => m.body).slice(0, 3)).toEqual(['message 0', 'message 1', 'message 2'])
   })
 })
+
+import { vi } from 'vitest'
+describe('storage failures (iOS Safari IndexedDB blob errors)', () => {
+  it('retries, then skips only the file the browser refuses, reports it, and finishes the import', async () => {
+    const z = await mk({ 'chat.txt': chat(['12/03/2022, 8:14 pm - Aditi: hi', '12/03/2022, 8:15 pm - Me: GOOD.jpg (file attached)', '12/03/2022, 8:16 pm - Me: BAD.jpg (file attached)']), 'GOOD.jpg': new Uint8Array([1, 2]), 'BAD.jpg': new Uint8Array([3, 4]) })
+    const realAdd = db.attachments.add.bind(db.attachments), realBulk = db.attachments.bulkAdd.bind(db.attachments)
+    vi.spyOn(db.attachments, 'bulkAdd').mockImplementation((async (items: any, o: any) => { if (items.some((i: any) => i.name === 'BAD.jpg')) throw new Error('UnknownError: Attempt to generate key in database without an in-progress transaction'); return realBulk(items, o) }) as any)
+    vi.spyOn(db.attachments, 'add').mockImplementation((async (a: any) => { if (a.name === 'BAD.jpg') throw new Error('UnknownError'); return realAdd(a) }) as any)
+    const r = await importZipCore(z, 'Aditi.zip', hooks())
+    vi.restoreAllMocks()
+    expect(r.reports[0].storageFailed).toEqual(['BAD.jpg'])
+    expect(r.status).toBe('done_with_warnings')
+    const msgs = (await db.messages.toArray()).sort((a, b) => a.seq - b.seq)
+    expect(msgs[1].attId).toBeTruthy(); expect(msgs[2].attId).toBeUndefined(); expect(msgs[2].attMissing).toBe(true)   // message kept, flagged unavailable
+    expect(await db.attachments.count()).toBe(1)
+  })
+})

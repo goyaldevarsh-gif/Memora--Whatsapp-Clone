@@ -85,6 +85,7 @@ export interface ImportReport {
   format: string
   warnings: string[]
   missingNames: string[]
+  storageFailed: string[]        // files the browser's storage refused to save even after retries (reported, never silent)
 }
 
 export interface ZipRecord {

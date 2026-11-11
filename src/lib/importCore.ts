@@ -45,8 +45,9 @@ const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'test
 // Safari/iOS exposes no navigator.deviceMemory and kills pages that use a lot of RAM: use smaller write batches there.
 const LOW_MEM = typeof navigator !== 'undefined' && !(navigator as unknown as { deviceMemory?: number }).deviceMemory
 const CHUNK = LOW_MEM ? 500 : 1500
-const BATCH_FILES = LOW_MEM ? 4 : 25
-const BATCH_BYTES = (LOW_MEM ? 10 : 40) * 1024 * 1024
+const BATCH_FILES = LOW_MEM ? 10 : 25
+const BATCH_BYTES = (LOW_MEM ? 3 : 40) * 1024 * 1024
+const SINGLE_BYTES = (LOW_MEM ? 1 : 8) * 1024 * 1024   // files at least this big are written one per transaction
 
 export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): Promise<ImportResult> {
   const cancelled = () => { if (hooks.isCancelled()) throw new Error('__cancelled__') }
@@ -148,24 +149,50 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
     const attIdByEntry = new Map<string, number>()
     let doneFiles = 0
     let orphan = units.map(() => 0)
-    let batch: Attachment[] = [], batchKeys: string[] = [], batchBytes = 0
+    const failedByUnit: string[][] = units.map(() => [])
+    let consecutiveFail = 0
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+    const reopen = async () => { try { db.close(); await db.open() } catch { /* retry will surface it */ } }
+    const materialize = async (b: Blob) => (b.size < 300 * 1024 * 1024 ? new Blob([await b.arrayBuffer()], { type: b.type }) : b)
+    const storageHint = async () => { try { const e = await navigator.storage.estimate(); return ` Browser storage: ${Math.round((e.usage ?? 0) / 1e6)} MB used of ${Math.round((e.quota ?? 0) / 1e6)} MB.` } catch { return '' } }
+    let batch: { att: Attachment; key: string; ui: number }[] = [], batchBytes = 0
+    // Safari/iOS IndexedDB sometimes rejects blob writes ("UnknownError"). Strategy: atomic batch -> per-file retries
+    // (reopen DB, copy blob into memory) -> if a single file still can't be stored, skip it, REPORT it, keep importing.
+    const storeOne = async (it: { att: Attachment; key: string; ui: number }) => {
+      let lastErr = ''
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (attempt > 0) { await sleep(400 * attempt); await reopen(); it.att.blob = await materialize(it.att.blob) }
+          const id = await db.attachments.add(it.att)
+          attIdByEntry.set(it.key, id as number); consecutiveFail = 0; return
+        } catch (e) { lastErr = (e as Error).message }
+      }
+      failedByUnit[it.ui].push(it.att.name); consecutiveFail++
+      await log('warn', `Could not store "${it.att.name}" (${Math.round(it.att.size / 1024)} KB): ${lastErr}`, zipId)
+      if (consecutiveFail >= 15) throw new Error(`The browser refused to store 15 files in a row — storage is probably full or unstable. Free some space on the device (or import on a PC and use Backup → Restore).${await storageHint()} Last error: ${lastErr}`)
+    }
     const flushBatch = async () => {
       if (!batch.length) return
-      const ids = await db.attachments.bulkAdd(batch, { allKeys: true })
-      ids.forEach((id, i) => attIdByEntry.set(batchKeys[i], id as number))
-      batch = []; batchKeys = []; batchBytes = 0
+      const items = batch; batch = []; batchBytes = 0
+      try {
+        const ids = await db.transaction('rw', db.attachments, () => db.attachments.bulkAdd(items.map(i => i.att), { allKeys: true }))
+        ids.forEach((id, i) => attIdByEntry.set(items[i].key, id as number)); consecutiveFail = 0
+      } catch {
+        for (const it of items) await storeOne(it)       // transaction was atomic: nothing from this batch was saved
+      }
     }
     for (const e of mediaEntries) {
       cancelled()
       const ui = refUnit.get(e.name) ?? 0
       const isOrphan = !refUnit.has(e.name)
       if (isOrphan) orphan[ui]++
-      const blob = await e.blob()
       const nm = baseName(e.name)
-      const mimeBlob = new Blob([blob], { type: mimeOf(nm) })
-      batch.push({ convId: unitConv[ui].convId, zipId, name: nm, path: e.name, mime: mimeOf(nm), size: mimeBlob.size, kind: extKind(nm), blob: mimeBlob, orphan: isOrphan || undefined, ts: refTs.get(e.name) ?? null })
-      batchKeys.push(e.name); batchBytes += mimeBlob.size
-      if (batch.length >= BATCH_FILES || batchBytes > BATCH_BYTES) await flushBatch()
+      let mimeBlob: Blob
+      try { mimeBlob = new Blob([await e.blob()], { type: mimeOf(nm) }) }
+      catch (err) { failedByUnit[ui].push(nm); await log('warn', `Could not read "${e.name}" from the ZIP: ${(err as Error).message}`, zipId); doneFiles++; continue }
+      const item = { att: { convId: unitConv[ui].convId, zipId, name: nm, path: e.name, mime: mimeOf(nm), size: mimeBlob.size, kind: extKind(nm), blob: mimeBlob, orphan: isOrphan || undefined, ts: refTs.get(e.name) ?? null } as Attachment, key: e.name, ui }
+      if (mimeBlob.size >= SINGLE_BYTES) { await flushBatch(); await storeOne(item) }     // big files get their own short transaction
+      else { batch.push(item); batchBytes += mimeBlob.size; if (batch.length >= BATCH_FILES || batchBytes > BATCH_BYTES) await flushBatch() }
       doneFiles++
       progress({ phase: 'media', pct: 15 + Math.round((doneFiles / Math.max(1, mediaEntries.length)) * 55), msg: `Saving media ${doneFiles}/${mediaEntries.length}` })
     }
@@ -225,6 +252,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
       const warnings = warningsPer[ui]
       if (!meName && !unitConv[ui].conv.isGroup) warnings.push('Could not tell which sender is you — set “My name” in Contact info so outgoing messages appear on the right.')
       if (!meName && unitConv[ui].conv.isGroup) warnings.push('Set “My name” in Settings or Contact info so your messages appear as outgoing.')
+      if (failedByUnit[ui].length) warnings.push(`${failedByUnit[ui].length} file(s) could not be saved by the browser's storage (they show as “attachment unavailable”): ${failedByUnit[ui].slice(0, 8).join(', ')}${failedByUnit[ui].length > 8 ? '…' : ''}. See Audit log for details.`)
       if (refCount[ui].missing) warnings.push(`${refCount[ui].missing} attachment(s) referenced in the chat were not found in the ZIP.`)
       if (refCount[ui].omitted) warnings.push(`${refCount[ui].omitted} attachment(s) were exported “without media” by WhatsApp and cannot be recovered from this ZIP.`)
       if (nonChatTxt.size) warnings.push(`${nonChatTxt.size} other .txt file(s) kept as documents.`)
@@ -235,7 +263,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
         orphanFiles: orphan[ui], unparsedLines: parsed.messages.filter(m => m.kind === 'unparsed').length, flaggedTimestamps: flaggedTs,
         firstTs: rLo, lastTs: rHi,
         dupCandidates: dupCount, dateOrder: parsed.dateOrder.toUpperCase() + (parsed.dateOrderAmbiguous ? ' (assumed)' : ''), format: parsed.format,
-        warnings, missingNames: refCount[ui].missingNames
+        warnings, missingNames: refCount[ui].missingNames, storageFailed: failedByUnit[ui]
       })
     }
 
