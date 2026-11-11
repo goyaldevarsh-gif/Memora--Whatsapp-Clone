@@ -166,7 +166,7 @@ export function HistoryPage() {
       {showLog ? logs?.map(l => <div key={l.id} className="text-xs border-b border-line/40 py-2"><span className={l.level === 'error' ? 'text-err' : l.level === 'warn' ? 'text-warn' : 'text-accent'}>{l.level.toUpperCase()}</span> <span className="text-mute">{new Date(l.ts).toLocaleString()}</span><div className="mt-0.5">{l.msg}</div></div>) :
         !zips?.length ? <Empty title="No imports yet" /> : zips.map(z => <Card key={z.id} className="p-3.5">
           <div className="flex items-center gap-3"><div className="flex-1 min-w-0"><div className="font-medium truncate">{z.name}</div><div className="text-xs text-mute">{fmtSize(z.size)} · {new Date(z.importedAt).toLocaleString()} · <span className={z.status === 'done' ? 'text-accent' : z.status === 'done_with_warnings' ? 'text-warn' : 'text-err'}>{z.status.replace(/_/g, ' ')}</span></div>{z.error && <div className="text-xs text-err mt-1">{z.error}</div>}</div>
-            <button aria-label="Download original ZIP" className="p-2 rounded-full hover:bg-white/10" onClick={() => download(z.blob, z.name)}><Download size={18} /></button>
+            {z.originalKept && <button aria-label="Download original ZIP" className="p-2 rounded-full hover:bg-white/10" onClick={() => download(z.blob, z.name)}><Download size={18} /></button>}
             {z.reports.length > 0 && <button className="text-xs text-accent" onClick={() => setOpen(open === z.id ? null : z.id!)}>{open === z.id ? 'Hide' : 'Report'}</button>}</div>
           {open === z.id && <Reports reports={z.reports} />}</Card>)}
     </div></div>

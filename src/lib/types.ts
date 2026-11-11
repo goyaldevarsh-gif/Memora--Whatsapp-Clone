@@ -93,6 +93,7 @@ export interface ZipRecord {
   size: number
   blob: Blob
   importedAt: number
+  originalKept: boolean            // false => the (large) original was not copied into Memora; user still has it on their device
   status: 'importing' | 'done' | 'done_with_warnings' | 'failed' | 'cancelled'
   error?: string
   convIds: number[]

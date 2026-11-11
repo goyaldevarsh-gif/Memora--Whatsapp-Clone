@@ -101,7 +101,7 @@ export function ChatView({ convId, jumpTo }: { convId: number; jumpTo?: number }
     setMenuMsg(null)
   }
   const dlAtt = async (m: Message) => { const a = m.attId ? await db.attachments.get(m.attId) : undefined; if (a) download(a.blob, a.name); setMenuMsg(null) }
-  const dlZip = async (m: Message) => { const z = await db.zips.get(m.zipId); if (z) download(z.blob, z.name); setMenuMsg(null) }
+  const dlZip = async (m: Message) => { const z = await db.zips.get(m.zipId); if (z?.originalKept) download(z.blob, z.name); else toast('Original ZIP was not copied into Memora (large file) — it is still on your device'); setMenuMsg(null) }
 
   if (conv === undefined || !msgs) return <div className="h-full bg-bg flex items-center justify-center text-mute">Loading…</div>
   if (conv === null as unknown) return <div className="h-full flex items-center justify-center text-mute">Conversation not found</div>
@@ -196,6 +196,6 @@ export function MessageDetails({ m, onClose }: { m: Message; onClose: () => void
   return <Modal title="Message details" onClose={onClose} wide>
     <div className="divide-y divide-line">{rows.map(([k, v]) => <div key={k} className="flex gap-3 py-2 text-sm"><div className="w-36 text-mute shrink-0">{k}</div><div className="break-all">{v}</div></div>)}</div>
     <div className="text-xs text-mute mt-3 mb-1">Raw text exactly as exported</div>
-    <pre className="bg-surface rounded-xl p-3 text-xs whitespace-pre-wrap break-words max-h-48 overflow-auto">{m.raw}</pre>
+    <pre className="bg-surface rounded-xl p-3 text-xs whitespace-pre-wrap break-words max-h-48 overflow-auto">{m.raw || `${m.rawTs} - ${m.sender ? m.sender + ': ' : ''}${m.body}`}</pre>
   </Modal>
 }

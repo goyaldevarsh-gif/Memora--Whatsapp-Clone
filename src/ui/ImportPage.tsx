@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { FolderUp, Check, X, Loader2, Clock, AlertTriangle, ChevronDown, ChevronUp, HelpCircle } from 'lucide-react'
-import { db } from '../lib/db'
+import { db, getSetting, setSetting } from '../lib/db'
 import type { Decision, UnitInfo } from '../lib/importCore'
 import { answerDecision, cancelAll, cancelCurrent, clearFinished, enqueue, useQueue, type QueueItem } from '../lib/importClient'
 import { fmtDate, fmtNum, fmtSize } from '../lib/format'
@@ -33,11 +33,12 @@ export function ImportPage() {
           {!active && done > 0 && <Btn className="w-full" onClick={() => nav('chats')}>View chats</Btn>}
         </div>}
 
+        <KeepOriginal />
         <Card className="p-4 text-sm text-mute space-y-1.5">
           <div className="font-semibold text-ink flex items-center gap-2"><HelpCircle size={16} />How to export from WhatsApp</div>
           <div><b className="text-ink">Android:</b> open chat → ⋮ → More → Export chat → <i>Include media</i> (or Without media) → save the ZIP.</div>
           <div><b className="text-ink">iPhone:</b> open chat → name at top → Export Chat → <i>Attach Media</i> → Save to Files.</div>
-          <div>Memora keeps every original ZIP untouched, shows what could not be matched, and never overwrites existing data. Large ZIPs are processed one at a time in the background; a ZIP bigger than ~1.5&nbsp;GB may exceed browser memory — export those chats in smaller date ranges.</div>
+          <div>Memora keeps every original ZIP untouched, shows what could not be matched, and never overwrites existing data. Large ZIPs are processed one at a time in the background; ZIPs are read as a stream (one file at a time), so multi-GB exports work — but keep the screen on and the tab open until it finishes.</div>
         </Card>
         <ImportHistoryMini />
       </div>
@@ -89,6 +90,19 @@ export function Reports({ reports }: { reports: import('../lib/types').ImportRep
     {r.warnings.map((w, j) => <div key={j} className="text-xs text-warn flex gap-1.5"><AlertTriangle size={13} className="shrink-0 mt-0.5" />{w}</div>)}
     {r.missingNames.length > 0 && <details className="text-xs text-mute"><summary className="cursor-pointer">Missing attachment filenames ({r.missingNames.length})</summary><div className="mt-1 break-all max-h-32 overflow-auto">{r.missingNames.join(', ')}</div></details>}
   </div>)}</div>
+}
+
+function KeepOriginal() {
+  const v = useLiveQuery(() => getSetting<number>('keepOriginalMaxMB', 300), [])
+  return <Card className="p-4 text-sm space-y-2">
+    <div className="font-semibold">Keep a copy of the original ZIP inside Memora?</div>
+    <select value={v ?? 300} onChange={e => setSetting('keepOriginalMaxMB', +e.target.value)} className="w-full bg-bg rounded-xl px-3 py-2.5 text-ink">
+      <option value={0}>Never (saves storage — keep originals on your phone/PC)</option>
+      <option value={300}>Only ZIPs smaller than 300 MB (recommended)</option>
+      <option value={1000000}>Always (uses ~2× storage)</option>
+    </select>
+    <div className="text-xs text-mute">Media, messages and search are always saved. A kept original doubles the space used, which matters for multi-GB chats on iPhone.</div>
+  </Card>
 }
 
 function ImportHistoryMini() {

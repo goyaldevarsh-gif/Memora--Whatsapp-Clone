@@ -55,10 +55,10 @@ export async function createBackup(o: BackupOptions, progress: Progress = () => 
     for (const a of atts) { await addBlob(`media/${a.id}`, a.blob); i++; if (i % 20 === 0) progress(30 + Math.round((i / atts.length) * 40), `Media ${i}/${atts.length}`) }
   }
   const zips = (await db.zips.toArray()).filter(z => z.convIds.some(c => convIds.has(c)) || !o.convIds)
-  await addText('data/zips.json', JSON.stringify(zips.map(({ blob, ...meta }) => ({ ...meta, file: o.includeZips ? `originals/${meta.id}.zip` : null }))))
+  await addText('data/zips.json', JSON.stringify(zips.map(({ blob, ...meta }) => ({ ...meta, file: o.includeZips && meta.originalKept !== false && blob.size > 0 ? `originals/${meta.id}.zip` : null }))))
   if (o.includeZips) {
     let i = 0
-    for (const z of zips) { await addBlob(`originals/${z.id}.zip`, z.blob); i++; progress(70 + Math.round((i / zips.length) * 20), `Original ZIPs ${i}/${zips.length}`) }
+    for (const z of zips.filter(z => z.originalKept !== false && z.blob.size > 0)) { await addBlob(`originals/${z.id}.zip`, z.blob); i++; progress(70 + Math.round((i / zips.length) * 20), `Original ZIPs ${i}/${zips.length}`) }
   }
   const bms = (await db.bookmarks.toArray()).filter(b => convIds.has(b.convId))
   await addText('data/bookmarks.json', JSON.stringify(bms))

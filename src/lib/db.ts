@@ -94,7 +94,9 @@ export async function rollbackZip(zipId: number, status: ZipRecord['status'] = '
         await recomputeConversation(cid)
       }
     }
-    await db.zips.update(zipId, { status, error, convIds: [] })
+    // a failed/cancelled multi-GB original is NOT kept inside the browser (it would waste storage); the user still has the file
+    const drop = status === 'cancelled' || (zip.size > 100 * 1024 * 1024)
+    await db.zips.update(zipId, { status, error, convIds: [], ...(drop ? { blob: new Blob([]), originalKept: false } : {}) })
   }
   await log('warn', `Import rolled back (${status})${error ? ': ' + error : ''}`, zipId)
 }

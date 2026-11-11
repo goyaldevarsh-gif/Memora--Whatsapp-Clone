@@ -14,7 +14,7 @@ A private, offline-first PWA that imports WhatsApp "Export Chat" ZIPs and lets y
 Android (`12/03/2022, 8:14 pm - Name: text`) and iOS (`[12/03/22, 20:14:05] Name: text`) formats, 12/24h clocks, `/ . -` date separators, DD/MM vs MM/DD detection (by value, then by chronology), multi-line messages, Hindi/emoji/Unicode, system lines, `(file attached)`, `<attached: …>`, "omitted" placeholders, locations, deleted messages, calls. Unparseable timestamps/lines are kept and flagged, with the raw text stored for future re-parsing.
 
 ## Known limits (honest list)
-- A ZIP is read into memory by the browser: ZIPs beyond ~1–1.5 GB may fail (the failure is reported and the file kept). Export big chats in date ranges.
+- ZIPs are streamed (central directory + one file at a time, ZIP64 supported), so multi-GB exports import without loading the archive into RAM. A single media file is still decompressed in memory (fine for normal videos). On iPhone keep the app open and screen on during a big import; very large archives also need free device storage (media is stored once; the original ZIP copy is optional and off by default above 300 MB).
 - Voice notes are `.opus`; playback depends on the browser (Chrome/Edge/Firefox fine; some Safari versions can't — download fallback provided). HEIC photos display only in Safari.
 - Timestamps carry no timezone in exports; Memora shows the exact clock time written in the export.
 - WhatsApp does not say which sender is "you": detected for 1:1 chats, otherwise set it once (Settings / Contact info).

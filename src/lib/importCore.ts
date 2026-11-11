@@ -1,4 +1,4 @@
-import JSZip from 'jszip'
+import { openZip, type ZipEntry } from './zipReader'
 import { db, log, recomputeConversation, rollbackZip, previewOf } from './db'
 import { parseWhatsAppText, captionOf, extKind, type ParsedMessage, type ParseResult } from './parser'
 import { guessIsGroup, guessMe, matchKey, nameFromFile } from './names'
@@ -16,6 +16,7 @@ export interface Hooks {
   decide(zipName: string, units: UnitInfo[]): Promise<Decision[]>
   isCancelled(): boolean
   myName?: string | null
+  keepOriginal?: boolean       // copy the original ZIP into IndexedDB (doubles storage); default true
 }
 export interface ImportResult { zipId: number; status: ZipRecord['status']; reports: ImportReport[]; convIds: number[] }
 
@@ -31,6 +32,7 @@ const MIME: Record<string, string> = {
 export const mimeOf = (name: string) => MIME[(name.split('.').pop() ?? '').toLowerCase()] ?? 'application/octet-stream'
 
 const normName = (s: string) => s.replace(/[‎‏‪-‮]/g, '').replace(/[  ]/g, ' ').normalize('NFC').trim().toLowerCase()
+const minMax = (a: (number | null)[]) => { let lo: number | null = null, hi: number | null = null; for (const t of a) { if (t === null) continue; if (lo === null || t < lo) lo = t; if (hi === null || t > hi) hi = t } return { lo, hi } }
 const baseName = (p: string) => p.split('/').pop() ?? p
 
 export function dupKeyOf(m: { ts: number | null; rawTs: string; sender: string; body: string; kind: MsgKind; attName?: string }): string {
@@ -46,20 +48,21 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
   hooks.progress({ phase: 'read', pct: 2, msg: 'Reading ZIP…' })
 
   // 1. Preserve the original ZIP first, untouched.
-  const zipId = await db.zips.add({ name: zipName, size: file.size, blob: file, importedAt: Date.now(), status: 'importing', convIds: [], reports: [] })
+  const keep = hooks.keepOriginal !== false
+  const zipId = await db.zips.add({ name: zipName, size: file.size, blob: keep ? file : new Blob([]), originalKept: keep, importedAt: Date.now(), status: 'importing', convIds: [], reports: [] })
   try {
-    let zip: JSZip
-    try { zip = await JSZip.loadAsync(file) } catch (e) { throw new Error(`Not a readable ZIP file (${(e as Error).message}). The original file was kept so it can be investigated.`) }
+    let all: ZipEntry[]
+    try { all = await openZip(file) } catch (e) { throw new Error(`Not a readable ZIP file (${(e as Error).message}).`) }
     cancelled()
 
-    const entries = Object.values(zip.files).filter(f => !f.dir && !/(^|\/)(__MACOSX|\.DS_Store)/.test(f.name) && !/(^|\/)\._/.test(f.name))
+    const entries = all.filter(f => !f.dir && !/(^|\/)(__MACOSX|\.DS_Store)/.test(f.name) && !/(^|\/)\._/.test(f.name))
     const txtEntries = entries.filter(f => /\.txt$/i.test(f.name))
     hooks.progress({ phase: 'parse', pct: 8, msg: `Parsing ${txtEntries.length} text file(s)…` })
 
-    const chats: { entry: JSZip.JSZipObject; parsed: ParseResult }[] = []
+    const chats: { entry: ZipEntry; parsed: ParseResult }[] = []
     const nonChatTxt = new Set<string>()
     for (const e of txtEntries) {
-      const text = await e.async('string')
+      const text = await e.text()
       const parsed = parseWhatsAppText(text)
       if (parsed.headerLines > 0) chats.push({ entry: e, parsed }); else nonChatTxt.add(e.name)
     }
@@ -75,9 +78,9 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
       const isGroup = guessIsGroup(parsed.senders, sys)
       const key = matchKey(nm)
       const candidates = existing.filter(c => matchKey(c.name) === key && c.isGroup === isGroup).map(c => ({ convId: c.id!, name: c.name, messageCount: c.messageCount }))
-      const tss = parsed.messages.map(m => m.ts).filter((t): t is number => t !== null)
+      const { lo: dLo, hi: dHi } = minMax(parsed.messages.map(m => m.ts))
       const defaultDecision: Decision = candidates.length ? { action: 'merge', convId: candidates[0].convId, name: candidates[0].name, isGroup } : { action: 'new', name: nm, isGroup }
-      return { chatFile: entry.name, name: nm, isGroup, messageCount: parsed.messages.length, firstTs: tss.length ? Math.min(...tss) : null, lastTs: tss.length ? Math.max(...tss) : null, candidates, defaultDecision }
+      return { chatFile: entry.name, name: nm, isGroup, messageCount: parsed.messages.length, firstTs: dLo, lastTs: dHi, candidates, defaultDecision }
     })
     const decisions = await hooks.decide(zipName, units)
     cancelled()
@@ -109,7 +112,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
     await db.zips.update(zipId, { convIds })
 
     // 4. Which unit references which media file? (names are matched case/space/invisible-char tolerant)
-    const mediaByName = new Map<string, JSZip.JSZipObject[]>()
+    const mediaByName = new Map<string, ZipEntry[]>()
     for (const e of mediaEntries) { const k = normName(baseName(e.name)); (mediaByName.get(k) ?? mediaByName.set(k, []).get(k)!).push(e) }
     const refUnit = new Map<string, number>()         // media entry path -> unit idx
     const refTs = new Map<string, number | null>()    // media entry path -> ts of the first referencing message
@@ -146,7 +149,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
       const ui = refUnit.get(e.name) ?? 0
       const isOrphan = !refUnit.has(e.name)
       if (isOrphan) orphan[ui]++
-      const blob = await e.async('blob')
+      const blob = await e.blob()
       const nm = baseName(e.name)
       const mimeBlob = new Blob([blob], { type: mimeOf(nm) })
       batch.push({ convId: unitConv[ui].convId, zipId, name: nm, path: e.name, mime: mimeOf(nm), size: mimeBlob.size, kind: extKind(nm), blob: mimeBlob, orphan: isOrphan || undefined, ts: refTs.get(e.name) ?? null })
@@ -164,7 +167,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
     for (let ui = 0; ui < units.length; ui++) {
       const { parsed, entry } = chats[ui]
       const { convId, merged, meName } = unitConv[ui]
-      const base = ((await db.messages.where('convId').equals(convId).reverse().sortBy('seq'))[0]?.seq ?? -1) + 1
+      const base = await db.messages.where('convId').equals(convId).count()   // monotonic tie-breaker; avoids loading a whole big conversation
       // dup candidates against messages from OTHER imports already in this conversation
       const existingKeys = new Map<string, number[]>()
       if (merged) await db.messages.where('convId').equals(convId).filter(m => m.zipId !== zipId && !m.hidden).each(m => { (existingKeys.get(m.dupKey) ?? existingKeys.set(m.dupKey, []).get(m.dupKey)!).push(m.id!) })
@@ -189,7 +192,9 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
         const row: Message = {
           convId, seq: base + i, sortTs: sortTs[i], ts: m.ts, rawTs: m.rawTs, sender: m.sender, isMe, body: m.body, kind: m.kind,
           attName: m.attName, attId, attMissing: m.attMissing || (!!m.attName && attId === undefined) || undefined,
-          zipId, srcFile: entry.name, lineNo: m.lineNo, raw: m.raw, flagged: m.flagged, dupKey: ''
+          zipId, srcFile: entry.name, lineNo: m.lineNo,
+          // raw is only stored when it can't be rebuilt from rawTs+sender+body (keeps big chats light in memory)
+          raw: (m.flagged || m.kind === 'unparsed' || m.kind === 'system') ? m.raw : '', flagged: m.flagged, dupKey: ''
         }
         row.dupKey = dupKeyOf(row)
         if (merged && m.kind !== 'system' && m.kind !== 'unparsed') {
@@ -205,7 +210,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
         hooks.progress({ phase: 'messages', pct: 70 + Math.round((doneMsgs / Math.max(1, totalMsgs)) * 27), msg: `Saving messages ${doneMsgs.toLocaleString()}/${totalMsgs.toLocaleString()}` })
       }
       await recomputeConversation(convId)
-      const tss = parsed.messages.map(m => m.ts).filter((t): t is number => t !== null)
+      const { lo: rLo, hi: rHi } = minMax(parsed.messages.map(m => m.ts))
       const warnings = warningsPer[ui]
       if (!meName && !unitConv[ui].conv.isGroup) warnings.push('Could not tell which sender is you — set “My name” in Contact info so outgoing messages appear on the right.')
       if (!meName && unitConv[ui].conv.isGroup) warnings.push('Set “My name” in Settings or Contact info so your messages appear as outgoing.')
@@ -217,7 +222,7 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
         parsed: parsed.messages.length, outgoing: out, incoming: inn, system: sys,
         mediaRefs: refCount[ui].refs + refCount[ui].omitted, matched: refCount[ui].matched, missing: refCount[ui].missing, omittedByWhatsApp: refCount[ui].omitted,
         orphanFiles: orphan[ui], unparsedLines: parsed.messages.filter(m => m.kind === 'unparsed').length, flaggedTimestamps: flaggedTs,
-        firstTs: tss.length ? Math.min(...tss) : null, lastTs: tss.length ? Math.max(...tss) : null,
+        firstTs: rLo, lastTs: rHi,
         dupCandidates: dupCount, dateOrder: parsed.dateOrder.toUpperCase() + (parsed.dateOrderAmbiguous ? ' (assumed)' : ''), format: parsed.format,
         warnings, missingNames: refCount[ui].missingNames
       })

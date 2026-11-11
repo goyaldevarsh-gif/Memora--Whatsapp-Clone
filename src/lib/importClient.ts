@@ -46,6 +46,8 @@ function runOne(it: QueueItem): Promise<void> {
     current = it
     patch(it, { status: 'running', msg: 'Starting…', pct: 1 })
     const myName = await getSetting<string | null>('myName', null)
+    const keepMB = await getSetting<number>('keepOriginalMaxMB', 300)
+    const keepOriginal = it.file.size <= keepMB * 1024 * 1024
     const w = new Worker(new URL('../worker/importWorker.ts', import.meta.url), { type: 'module' })
     worker = w
     const finish = () => { w.terminate(); if (worker === w) worker = null; current = null; resolve() }
@@ -67,7 +69,7 @@ function runOne(it: QueueItem): Promise<void> {
       }
     }
     w.onerror = e => { patch(it, { status: 'failed', error: e.message || 'Worker crashed', msg: 'Failed' }); finish() }
-    w.postMessage({ type: 'import', file: it.file, name: it.name, myName })
+    w.postMessage({ type: 'import', file: it.file, name: it.name, myName, keepOriginal })
   })
 }
 
