@@ -171,7 +171,7 @@ function SplitTool() {
   const sup = typeof window !== 'undefined' && 'showDirectoryPicker' in window
   const pick = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
-  const [n, setN] = useState(5)
+  const [mb, setMb] = useState(200)
   const [auto, setAuto] = useState(true)
   const [st, setSt] = useState<{ pct: number; msg: string } | null>(null)
   const [res, setRes] = useState<string | null>(null)
@@ -182,7 +182,7 @@ function SplitTool() {
       const dir = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({ mode: 'readwrite' })
       setSt({ pct: 0, msg: 'Reading ZIP…' })
       const base = file.name.replace(/\.zip$/i, '')
-      const names = await splitZip(file, base, n, async fname => {
+      const names = await splitZip(file, base, { maxBytes: mb * 1024 * 1024 }, async fname => {
         const fh = await dir.getFileHandle(fname, { create: true }); const w = await fh.createWritable()
         return { write: c => w.write(c as unknown as FileSystemWriteChunkType), close: () => w.close() }
       }, (pct, msg) => setSt({ pct, msg }))
@@ -198,10 +198,10 @@ function SplitTool() {
   return <details className="text-sm"><summary className="cursor-pointer text-mute px-1 py-2">Big ZIP? Split into smaller ZIPs (computer only)</summary>
     <Card className="p-4 space-y-3">
       {!sup ? <div className="text-xs text-warn">This needs Chrome or Edge on a computer (it writes files to a folder you choose).</div> : <>
-        <div className="text-xs text-mute">Pick the big ZIP, choose how many parts and an empty output folder. Memora cuts it into N ZIPs (chat + some media in part 1, only media in the rest) without loading it into memory.</div>
-        <input ref={pick} type="file" accept=".zip,application/zip" hidden onChange={e => { const f = e.target.files?.[0] ?? null; e.target.value = ''; setFile(f); if (f) setN(Math.max(2, Math.ceil(f.size / 1.5e9))) }} />
+        <div className="text-xs text-mute">Pick the big ZIP, choose the maximum size of a part (default 200 MB) and an empty output folder. Memora cuts it into ZIPs of at most that size (chat + some media in part 1, only media in the rest) without loading it into memory.</div>
+        <input ref={pick} type="file" accept=".zip,application/zip" hidden onChange={e => { const f = e.target.files?.[0] ?? null; e.target.value = ''; setFile(f);  }} />
         <Btn kind="ghost" className="w-full" disabled={!!st} onClick={() => pick.current?.click()}>{file ? `${file.name} · ${fmtSize(file.size)}` : 'Choose big ZIP'}</Btn>
-        <label className="flex items-center gap-2 text-xs text-mute">Parts <input type="number" min={2} max={40} value={n} onChange={e => setN(Math.max(2, Math.min(40, +e.target.value || 2)))} className="w-16 bg-bg rounded-lg px-2 py-1 text-ink" /></label>
+        <label className="flex items-center gap-2 text-xs text-mute">Max size of each part <input type="number" min={20} max={3000} value={mb} onChange={e => setMb(Math.max(20, Math.min(3000, +e.target.value || 200)))} className="w-20 bg-bg rounded-lg px-2 py-1 text-ink" /> MB{file ? ` · about ${Math.max(1, Math.ceil(file.size / (mb * 1024 * 1024)))} parts` : ''}</label>
         <label className="flex items-center gap-2 text-xs text-mute"><input type="checkbox" checked={auto} onChange={e => setAuto(e.target.checked)} />Import the parts automatically after splitting</label>
         <Btn className="w-full" disabled={!file || !!st} onClick={run}>{st ? `${st.msg} (${st.pct}%)` : 'Choose output folder & split'}</Btn>
         {st && <div className="h-1.5 bg-bg rounded-full overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: `${st.pct}%` }} /></div>}

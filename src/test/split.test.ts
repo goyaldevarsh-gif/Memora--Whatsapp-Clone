@@ -9,6 +9,15 @@ const hooks = (): Hooks => ({ progress() {}, decide: async (_n, u) => u.map(x =>
 beforeEach(async () => { await db.delete(); await db.open() })
 
 describe('split big zip', () => {
+  it('caps each part at a maximum size', async () => {
+    const z = new JSZip(); z.file('chat.txt', '12/03/2022, 8:14 pm - Aditi: hi')
+    for (let i = 1; i <= 10; i++) z.file(`F${i}.bin`, new Uint8Array(1000).fill(i))
+    const big = await z.generateAsync({ type: 'blob' })
+    const out = new Map<string, Uint8Array[]>()
+    const names = await splitZip(big, 'X', { maxBytes: 3500 }, async f => { const c: Uint8Array[] = []; out.set(f, c); return { write: async b => { c.push(b.slice()) }, close: async () => {} } })
+    expect(names.length).toBe(4)                         // 3+3+3+1 files
+    for (const n of names) { const zz = await JSZip.loadAsync(new Blob(out.get(n)! as BlobPart[])); const sz = (await Promise.all(Object.values(zz.files).filter(f => !f.dir && f.name.startsWith('F')).map(async f => (await f.async('uint8array')).length))).reduce((a, b) => a + b, 0); expect(sz).toBeLessThanOrEqual(3500) }
+  })
   it('makes valid parts (CRC checked) and importing them in order links every attachment', async () => {
     const z = new JSZip()
     const lines = ['12/03/2022, 8:14 pm - Aditi: hi']

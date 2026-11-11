@@ -74,24 +74,25 @@ class ZipWriter {
 }
 
 export interface SplitPlan { parts: ZipEntry[][]; bytes: number[] }
-export function planSplit(entries: ZipEntry[], n: number): SplitPlan {
+/** `limit`: a number N = N parts of about equal size; { maxBytes } = start a new part whenever the current one would pass the cap (one oversized file gets a part of its own). */
+export function planSplit(entries: ZipEntry[], limit: number | { maxBytes: number }): SplitPlan {
   const files = entries.filter(e => !e.dir && !/(^|\/)(__MACOSX|\.DS_Store)/.test(e.name) && !/(^|\/)\._/.test(e.name))
   const txt = files.filter(e => /\.txt$/i.test(e.name)), media = files.filter(e => !/\.txt$/i.test(e.name))
-  const total = media.reduce((a, e) => a + e.size, 0)
-  const target = total / Math.max(1, n)
-  const parts: ZipEntry[][] = [txt.slice()]; let cur = 0, acc = 0
-  for (const e of media) {
-    if (acc >= target && cur < n - 1) { parts.push([]); cur++; acc = 0 }
-    if (cur === 0 && !parts[0].length) { /* keep */ }
-    parts[cur].push(e); acc += e.size
+  const parts: ZipEntry[][] = [txt.slice()]; let cur = 0, acc = txt.reduce((a, e) => a + e.size, 0)
+  if (typeof limit === 'number') {
+    const target = media.reduce((a, e) => a + e.size, 0) / Math.max(1, limit)
+    acc = 0
+    for (const e of media) { if (acc >= target && cur < limit - 1) { parts.push([]); cur++; acc = 0 } parts[cur].push(e); acc += e.size }
+  } else {
+    for (const e of media) { if (acc > 0 && acc + e.size > limit.maxBytes) { parts.push([]); cur++; acc = 0 } parts[cur].push(e); acc += e.size }
   }
   const kept = parts.filter(p => p.length)
   return { parts: kept, bytes: kept.map(p => p.reduce((a, e) => a + e.size, 0)) }
 }
 
-export async function splitZip(file: Blob, baseName: string, n: number, openSink: (fileName: string) => Promise<Sink>, onProgress: (pct: number, msg: string) => void = () => {}): Promise<string[]> {
+export async function splitZip(file: Blob, baseName: string, limit: number | { maxBytes: number }, openSink: (fileName: string) => Promise<Sink>, onProgress: (pct: number, msg: string) => void = () => {}): Promise<string[]> {
   const entries = await openZip(file)
-  const plan = planSplit(entries, n)
+  const plan = planSplit(entries, limit)
   const total = plan.bytes.reduce((a, b) => a + b, 0) || 1
   const names: string[] = []; let done = 0
   for (let i = 0; i < plan.parts.length; i++) {
