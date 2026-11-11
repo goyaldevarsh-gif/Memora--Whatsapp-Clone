@@ -7,6 +7,7 @@ import { answerDecision, cancelAll, cancelCurrent, clearFinished, enqueue, impor
 import { fmtDate, fmtNum, fmtSize } from '../lib/format'
 import { Btn, Card, Header } from './common'
 import { nav } from './router'
+import { splitZip } from '../lib/zipSplit'
 import { startBackupImport, stopBackupImport, useBackupJob } from '../lib/iosJob'
 
 export function ImportPage() {
@@ -51,6 +52,7 @@ export function ImportPage() {
         </div>}
 
         <Unfinished />
+        <SplitTool />
         <KeepOriginal />
         <details className="text-sm"><summary className="cursor-pointer text-mute px-1 py-2">Advanced: import a full iTunes backup (PC)</summary><IphoneBackup /></details>
         <Card className="p-4 text-sm text-mute space-y-1.5">
@@ -162,4 +164,47 @@ function Unfinished() {
     <div className="text-xs text-mute">Nothing is lost. Choose the same ZIP(s) again — or the whole folder — and each one continues from where it stopped. Files already saved are skipped; finished ZIPs are skipped automatically.</div>
     <ul className="text-xs space-y-1">{z.map(r => <li key={r.id} className="flex justify-between gap-2"><span className="truncate">{r.name}</span><span className="text-mute shrink-0">{r.lastPhase ?? ''}</span></li>)}</ul>
   </Card>
+}
+
+/** Desktop Chrome/Edge: split a huge ZIP into N smaller ZIPs, then (optionally) import them one after another automatically. */
+function SplitTool() {
+  const sup = typeof window !== 'undefined' && 'showDirectoryPicker' in window
+  const pick = useRef<HTMLInputElement>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [n, setN] = useState(5)
+  const [auto, setAuto] = useState(true)
+  const [st, setSt] = useState<{ pct: number; msg: string } | null>(null)
+  const [res, setRes] = useState<string | null>(null)
+  const run = async () => {
+    if (!file) return
+    setRes(null)
+    try {
+      const dir = await (window as unknown as { showDirectoryPicker(o: object): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({ mode: 'readwrite' })
+      setSt({ pct: 0, msg: 'Reading ZIP…' })
+      const base = file.name.replace(/\.zip$/i, '')
+      const names = await splitZip(file, base, n, async fname => {
+        const fh = await dir.getFileHandle(fname, { create: true }); const w = await fh.createWritable()
+        return { write: c => w.write(c as unknown as FileSystemWriteChunkType), close: () => w.close() }
+      }, (pct, msg) => setSt({ pct, msg }))
+      setSt(null)
+      if (auto) {
+        const files: File[] = []
+        for (const nm of names) files.push(await (await dir.getFileHandle(nm)).getFile())
+        enqueue(files)
+        setRes(`${names.length} parts saved in the folder and queued for import (below). Part 1 brings the chat; the other parts only add the media.`)
+      } else setRes(`${names.length} parts saved in the folder. Import them with “Choose a whole folder” — part 1 first brings the chat, the others add the media.`)
+    } catch (e) { setSt(null); setRes('Stopped: ' + (e as Error).message) }
+  }
+  return <details className="text-sm"><summary className="cursor-pointer text-mute px-1 py-2">Big ZIP? Split into smaller ZIPs (computer only)</summary>
+    <Card className="p-4 space-y-3">
+      {!sup ? <div className="text-xs text-warn">This needs Chrome or Edge on a computer (it writes files to a folder you choose).</div> : <>
+        <div className="text-xs text-mute">Pick the big ZIP, choose how many parts and an empty output folder. Memora cuts it into N ZIPs (chat + some media in part 1, only media in the rest) without loading it into memory.</div>
+        <input ref={pick} type="file" accept=".zip,application/zip" hidden onChange={e => { const f = e.target.files?.[0] ?? null; e.target.value = ''; setFile(f); if (f) setN(Math.max(2, Math.ceil(f.size / 1.5e9))) }} />
+        <Btn kind="ghost" className="w-full" disabled={!!st} onClick={() => pick.current?.click()}>{file ? `${file.name} · ${fmtSize(file.size)}` : 'Choose big ZIP'}</Btn>
+        <label className="flex items-center gap-2 text-xs text-mute">Parts <input type="number" min={2} max={40} value={n} onChange={e => setN(Math.max(2, Math.min(40, +e.target.value || 2)))} className="w-16 bg-bg rounded-lg px-2 py-1 text-ink" /></label>
+        <label className="flex items-center gap-2 text-xs text-mute"><input type="checkbox" checked={auto} onChange={e => setAuto(e.target.checked)} />Import the parts automatically after splitting</label>
+        <Btn className="w-full" disabled={!file || !!st} onClick={run}>{st ? `${st.msg} (${st.pct}%)` : 'Choose output folder & split'}</Btn>
+        {st && <div className="h-1.5 bg-bg rounded-full overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: `${st.pct}%` }} /></div>}
+        {res && <div className="text-xs text-accent">{res}</div>}</>}
+    </Card></details>
 }

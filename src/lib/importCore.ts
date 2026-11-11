@@ -86,6 +86,16 @@ export async function importZipCore(file: Blob, zipName: string, hooks: Hooks): 
       const parsed = parseWhatsAppText(text)
       if (parsed.headerLines > 0) chats.push({ entry: e, parsed }); else nonChatTxt.add(e.name)
     }
+    if (!chats.length && !txtEntries.length && entries.length) {
+      // Media-only ZIP (e.g. part 2..N of a split export): attach the files to messages that are still waiting for them.
+      const fr = await fillMissingAttachments(file, zipName, (pct, msg) => progress({ phase: 'media', pct: Math.max(5, pct), msg }), zipId)
+      const status: ZipRecord['status'] = fr.stillMissing || fr.failed.length ? 'done_with_warnings' : 'done'
+      const note = `Media-only ZIP: attached ${fr.filled} file(s) to existing messages.${fr.stillMissing ? ` ${fr.stillMissing} message(s) still wait for files (other parts / other ZIPs).` : ''}${fr.failed.length ? ` Browser refused: ${fr.failed.slice(0, 5).join(', ')}.` : ''}`
+      const report: ImportReport = { zipName, conversation: 'Media-only ZIP', conversationId: 0, mergedIntoExisting: true, chatFiles: [], parsed: 0, outgoing: 0, incoming: 0, system: 0, mediaRefs: fr.filled, matched: fr.filled, missing: 0, omittedByWhatsApp: 0, orphanFiles: 0, unparsedLines: 0, flaggedTimestamps: 0, firstTs: null, lastTs: null, dupCandidates: 0, dateOrder: 'n/a', format: 'media only', warnings: [note], missingNames: [], storageFailed: fr.failed }
+      await db.zips.update(zipId, { status, reports: [report] })
+      progress({ phase: 'done', pct: 100, msg: 'Done' })
+      return { zipId, status, reports: [report], convIds: [] }
+    }
     if (!chats.length) throw new Error('No WhatsApp chat text file was recognised in this ZIP (no message lines matched any known format). The ZIP was preserved — please share a sample so the parser can be extended.')
     cancelled()
 
@@ -322,7 +332,7 @@ export interface FillResult { filled: number; stillMissing: number; failed: stri
  * Attach files that earlier imports could not store. Messages are NEVER re-imported or duplicated:
  * only messages that reference a filename but have no attachment get linked to the matching file in the ZIP.
  */
-export async function fillMissingAttachments(file: Blob, zipName: string, onProgress: (pct: number, msg: string) => void = () => {}): Promise<FillResult> {
+export async function fillMissingAttachments(file: Blob, zipName: string, onProgress: (pct: number, msg: string) => void = () => {}, useZipId?: number): Promise<FillResult> {
   const entries = (await openZip(file)).filter(f => !f.dir && !/(^|\/)(__MACOSX|\.DS_Store)/.test(f.name) && !/\.txt$/i.test(f.name))
   const byName = new Map<string, ZipEntry>()
   for (const e of entries) { const k = normName(baseName(e.name)); if (!byName.has(k)) byName.set(k, e) }
@@ -331,7 +341,7 @@ export async function fillMissingAttachments(file: Blob, zipName: string, onProg
   await db.messages.filter(m => !!m.attName && !m.attId && m.attMissing === true).each(m => {
     const k = `${m.convId}|${normName(baseName(m.attName!))}`; (need.get(k) ?? need.set(k, []).get(k)!).push(m); totalNeed++
   })
-  const existingZip = await db.zips.where('name').equals(zipName).first()
+  const existingZip = useZipId ? await db.zips.get(useZipId) : await db.zips.where('name').equals(zipName).first()
   const zipId = existingZip?.id ?? await db.zips.add({ name: zipName, size: file.size, blob: new Blob([]), originalKept: false, appVersion: VERSION, importedAt: Date.now(), status: 'done', convIds: [], reports: [] })
   let filled = 0, notInZip = 0, i = 0; const failed: string[] = []; const touched = new Set<number>()
   for (const [key, msgs] of need) {
