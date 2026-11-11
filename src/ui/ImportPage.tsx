@@ -50,8 +50,9 @@ export function ImportPage() {
           {!active && done > 0 && <Btn className="w-full" onClick={() => nav('chats')}>View chats</Btn>}
         </div>}
 
-        <IphoneBackup />
+        <Unfinished />
         <KeepOriginal />
+        <details className="text-sm"><summary className="cursor-pointer text-mute px-1 py-2">Advanced: import a full iTunes backup (PC)</summary><IphoneBackup /></details>
         <Card className="p-4 text-sm text-mute space-y-1.5">
           <div className="font-semibold text-ink flex items-center gap-2"><HelpCircle size={16} />How to export from WhatsApp</div>
           <div><b className="text-ink">Android:</b> open chat → ⋮ → More → Export chat → <i>Include media</i> (or Without media) → save the ZIP.</div>
@@ -149,5 +150,16 @@ function IphoneBackup() {
     {j.state === 'running' && <><div className="h-1.5 bg-bg rounded-full overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: `${j.pct}%` }} /></div><button onClick={stopBackupImport} className="text-xs text-err">Stop (finished chats stay, you can resume)</button></>}
     {j.error && <div className="text-xs text-err">{j.error}</div>}
     {j.state === 'done' && j.reports && <><div className="text-xs text-accent">{j.reports.length} chat(s) imported.</div><Reports reports={j.reports} /></>}
+  </Card>
+}
+
+/** ZIPs whose import stopped midway: they continue from where they stopped when the same ZIP (or its whole folder) is picked again. */
+function Unfinished() {
+  const z = useLiveQuery(() => db.zips.where('status').equals('interrupted').toArray(), [])
+  if (!z?.length) return null
+  return <Card className="p-4 text-sm space-y-2 border border-warn/40">
+    <div className="font-semibold text-warn">{z.length} import{z.length === 1 ? '' : 's'} not finished</div>
+    <div className="text-xs text-mute">Nothing is lost. Choose the same ZIP(s) again — or the whole folder — and each one continues from where it stopped. Files already saved are skipped; finished ZIPs are skipped automatically.</div>
+    <ul className="text-xs space-y-1">{z.map(r => <li key={r.id} className="flex justify-between gap-2"><span className="truncate">{r.name}</span><span className="text-mute shrink-0">{r.lastPhase ?? ''}</span></li>)}</ul>
   </Card>
 }
